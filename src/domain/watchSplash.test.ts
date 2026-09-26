@@ -249,7 +249,7 @@ test('a fresh live round skips the splash and does not hold the location prompt'
   assert.equal(existsSync(new URL('targets/watch/WatchSplashFirstFrame.png', root)), false);
   const catalog = read('targets/watch/Assets.xcassets/WatchSplashFirstFrame.imageset/Contents.json');
   assert.match(catalog, /WatchSplashFirstFrame\.png/);
-  assert.match(splash, /UIImage\(named: firstFrame\)/);
+  assert.match(read('targets/watch/WatchSplash.swift'), /UIImage\(named: firstFrame\)/);
 });
 
 test('play() waits for a ready item and an active scene; safety starts when the clip is moving', () => {
