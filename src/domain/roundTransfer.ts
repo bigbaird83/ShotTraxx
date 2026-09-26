@@ -7,6 +7,7 @@ import { normalizeCourseDataSource } from './courseDataSource';
 import { SHOTTRAXX_BRAND } from './playerCopy';
 import { parseFairwayResult, type FairwayResult } from './fairwayGir';
 import { MAX_PENALTY_STROKES, MIN_PENALTY_STROKES } from './penalty';
+import { parseShotLie, type ShotLie, type ShotLieSource } from './shotLie';
 import type { PenaltyKind, ShotFixQuality, ShotSource } from './types';
 
 /**
@@ -69,6 +70,8 @@ export type RoundTransferShot = {
   suggested: boolean;
   holeOut: boolean;
   averageEligibleAt: string | null;
+  /** Player lie tap only. Auto lies re-read from the course map. Older files omit it. */
+  playerLie?: ShotLie;
 };
 
 /** One penalty or drop. lat/lng are omitted unless they are a real point. */
@@ -212,6 +215,8 @@ type ExportShotInput = {
   suggested: boolean;
   holeOut: boolean;
   averageEligibleAt?: string | null;
+  lie?: ShotLie | null;
+  lieSource?: ShotLieSource | null;
 };
 
 type ExportHoleInput = {
@@ -369,7 +374,13 @@ export function acceptTransferShot(raw: unknown): RoundTransferShot | null {
     suggested: record.suggested === true,
     holeOut: record.holeOut === true,
     averageEligibleAt: text(record.averageEligibleAt),
+    ...playerLieField(parseShotLie(record.playerLie)),
   };
+}
+
+/** `playerLie` rides only when the player tapped one, so older files and auto lies add no key. */
+function playerLieField(lie: ShotLie | null | undefined): { playerLie?: ShotLie } {
+  return lie ? { playerLie: lie } : {};
 }
 
 function penaltyKind(value: unknown): PenaltyKind | null {
@@ -535,6 +546,7 @@ function shotFromExport(shot: ExportShotInput): RoundTransferShot | null {
     suggested: shot.suggested,
     holeOut: shot.holeOut,
     averageEligibleAt: shot.averageEligibleAt ?? null,
+    ...playerLieField(shot.lieSource === 'player' ? shot.lie : null),
   });
 }
 
@@ -1004,6 +1016,7 @@ function canonicalTransferRound(
             suggested: shot.suggested,
             holeOut: shot.holeOut,
             averageEligibleAt: shot.averageEligibleAt,
+            playerLie: shot.playerLie ?? null,
           })),
         ...(listed ? { penalties: canonicalPenalties(listed) } : {}),
         };

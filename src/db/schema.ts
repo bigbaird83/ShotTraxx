@@ -265,6 +265,9 @@ export function migrate(db: SQLiteDatabase): void {
   ensureColumn(db, 'shots', 'suggested', 'INTEGER NOT NULL DEFAULT 0');
   ensureColumn(db, 'shots', 'average_eligible_at', 'TEXT');
   ensureColumn(db, 'shots', 'hole_out', 'INTEGER NOT NULL DEFAULT 0');
+  // Nullable lie for strokes gained. Existing rows stay null; nothing is rewritten.
+  ensureColumn(db, 'shots', 'lie', 'TEXT');
+  ensureColumn(db, 'shots', 'lie_source', 'TEXT');
   ensureColumn(db, 'holes', 'putts', 'INTEGER NOT NULL DEFAULT 0');
   ensureColumn(db, 'holes', 'putt_lengths', 'TEXT');
   if (ensureColumn(db, 'holes', 'putts_done', 'INTEGER NOT NULL DEFAULT 0')) {

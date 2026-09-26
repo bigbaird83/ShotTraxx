@@ -2,11 +2,13 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
   averageStrokesGainedPer18,
+  expectedFromLie,
   expectedFromTee,
   SG_TRENDS_MIN_HOLES,
   expectedOffGreen,
   expectedPuttsForBucket,
   formatStrokesGained,
+  strokesGainedChip,
   holeStrokesGained,
   roundStrokesGained,
   weakestCategory,
@@ -206,6 +208,53 @@ test('a 9-hole round is counted and scaled by 2', () => {
 
 test('a window of only short rounds has no strokes-gained average', () => {
   assert.equal(averageStrokesGainedPer18([trendRound(2, -1), trendRound(8, -4), null]), null);
+});
+
+test('a 2-hole round stays out of the trends average', () => {
+  assert.equal(SG_TRENDS_MIN_HOLES, 9);
+  assert.equal(averageStrokesGainedPer18([trendRound(2, -20, 50)]), null);
+});
+
+test('a known lie uses its own baseline; unknown averages fairway and rough', () => {
+  close(expectedFromLie('fairway', 150), 2.945);
+  close(expectedFromLie('rough', 150), 3.19);
+  close(expectedFromLie('sand', 100), 3.23);
+  close(expectedFromLie('tee', 400), 3.99);
+  close(expectedFromLie(null, 150), (2.945 + 3.19) / 2);
+
+  const fromSand = holeStrokesGained(hole({ shots: [shot(1, 400), shot(2, 100, { lie: 'sand' })] }));
+  const fromFairway = holeStrokesGained(hole({ shots: [shot(1, 400), shot(2, 100, { lie: 'fairway' })] }));
+  assert.ok(fromSand && fromFairway);
+  // Same result from a harder lie: the drive loses more, the approach gains more.
+  assert.ok(fromSand.offTee < fromFairway.offTee);
+  assert.ok(fromSand.approach > fromFairway.approach);
+  close(fromSand.total, fromFairway.total);
+});
+
+test('the tee shot ignores any lie', () => {
+  const sg = holeStrokesGained(hole({ shots: [shot(1, 400, { lie: 'sand' }), shot(2, 150)] }));
+  close(sg?.total ?? null, 3.99 - 4);
+  close(sg?.offTee ?? null, 3.99 - (expectedOffGreen(150) as number) - 1);
+});
+
+test('a shot with no lie matches the fairway/rough mean strokes gained uses today', () => {
+  const omitted = holeStrokesGained(hole());
+  const explicitNull = holeStrokesGained(hole({ shots: [shot(1, 400), shot(2, 150, { lie: null })] }));
+  assert.ok(omitted && explicitNull);
+  assert.deepEqual(explicitNull, omitted);
+  const approachStart = expectedOffGreen(150) as number;
+  close(expectedFromLie(undefined, 150), approachStart);
+  close(expectedFromLie(null, 150), approachStart);
+  const firstPutt = expectedPuttsForBucket('10_to_20') as number;
+  close(omitted.offTee, 3.99 - approachStart - 1);
+  close(omitted.approach, approachStart - firstPutt - 1);
+  close(omitted.unsplit, 0);
+});
+
+test('shot chip reads SG with a sign, or nothing', () => {
+  assert.equal(strokesGainedChip(0.34), 'SG +0.3');
+  assert.equal(strokesGainedChip(-1.26), 'SG −1.3');
+  assert.equal(strokesGainedChip(null), null);
 });
 
 test('format and weakest category', () => {

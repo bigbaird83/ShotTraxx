@@ -1,0 +1,10 @@
+{
+  "name": "store-environment",
+  "version": "1.0.0",
+  "private": true,
+  "description": "StoreKit 2 AppTransaction environment: production is the App Store, sandbox is TestFlight.",
+  "main": "index.ts",
+  "license": "UNLICENSED",
+  "homepage": "https://github.com/bigbaird83/ShotTraxx",
+  "author": "ShotTraxx"
+}

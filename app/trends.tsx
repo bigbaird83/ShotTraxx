@@ -30,6 +30,7 @@ import {
   type TrendRoundIn,
   type TrendWindow,
 } from '@/src/domain/trends';
+import { useProFeature } from '@/src/services/proFeature';
 import { Screen } from '@/src/ui/Screen';
 import { TrendBars } from '@/src/ui/TrendBars';
 import { useColors } from '@/src/ui/ColorThemeProvider';
@@ -46,6 +47,7 @@ const METRICS: { id: Exclude<TrendMetricId, 'carry'>; title: string; hint: strin
 /** Trends across finished rounds — one small chart per stat, from saved rows only. */
 export default function TrendsScreen() {
   const { db, revision } = useDb();
+  const strokesGainedOn = useProFeature();
   const colors = useColors();
   const styles = useMemo(() => makeStyles(colors), [colors]);
   const [windowSize, setWindowSize] = useState<TrendWindow>(10);
@@ -120,7 +122,7 @@ export default function TrendsScreen() {
         })}
       </View>
 
-      <StrokesGainedCard styles={styles} average={sgAverage} />
+      <StrokesGainedCard styles={styles} average={sgAverage} unlocked={strokesGainedOn} />
 
       {METRICS.map((metric) => {
         const series = planTrend({ rounds, metric: metric.id, window: windowSize });
@@ -174,10 +176,20 @@ export default function TrendsScreen() {
 function StrokesGainedCard({
   styles,
   average,
+  unlocked,
 }: {
   styles: ReturnType<typeof makeStyles>;
   average: ReturnType<typeof averageStrokesGainedPer18>;
+  unlocked: boolean;
 }) {
+  if (!unlocked) {
+    return (
+      <View style={styles.card} testID="trend-strokes-gained">
+        <Text style={styles.section}>{COPY.strokesGained}</Text>
+        <Text style={styles.muted}>{COPY.strokesGainedPro}</Text>
+      </View>
+    );
+  }
   const weakest = average ? weakestCategory(average) : null;
   return (
     <View style={styles.card} testID="trend-strokes-gained">

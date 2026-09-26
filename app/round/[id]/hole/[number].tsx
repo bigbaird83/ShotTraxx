@@ -43,6 +43,7 @@ import {
   listPenaltiesForHole,
   listRounds,
   listShotsForHole,
+  fillAutoShotLies,
   markFirstLaunchTipSeen,
   getThunderbirdPinSheet,
   saveHoleTee,
@@ -292,6 +293,11 @@ function HoleScreenBody() {
     () => (hole ? listPenaltiesForHole(db, hole.id) : []),
     [db, hole, revision],
   );
+  // Auto lie for strokes gained, from the mapped outlines already on screen. Player taps stay.
+  useEffect(() => {
+    if (!hole || !osmOverlay) return;
+    if (fillAutoShotLies(db, [hole.id], osmOverlay.features) > 0) bump();
+  }, [db, hole, osmOverlay, shots, bump]);
   const clubs = useMemo(() => listClubs(db, true), [db, revision]);
   const clubMap = useMemo(() => getClubMap(db), [db, revision]);
   const averages = useMemo(() => listClubAverages(db).filter((row) => row.club.enabled), [db, revision]);

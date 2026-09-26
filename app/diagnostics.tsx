@@ -22,6 +22,7 @@ import {
   watchLinkFromNative,
   type WatchLinkSnapshot,
 } from '@/src/domain/diagnostics';
+import { formatProGating } from '@/src/domain/proFeature';
 import { formatProExpiration } from '@/src/domain/proEntitlement';
 import {
   setProTestOverride,
@@ -30,6 +31,7 @@ import {
   useProTestOverride,
   useRevenueCatStatus,
 } from '@/src/services/purchases';
+import { useProGating } from '@/src/services/proFeature';
 import { useLiveFix } from '@/src/services/useLiveFix';
 import { useColors } from '@/src/ui/ColorThemeProvider';
 import { Screen } from '@/src/ui/Screen';
@@ -62,6 +64,8 @@ export default function DiagnosticsScreen() {
   const pro = useProStatus(now);
   const proOverride = useProTestOverride();
   const revenueCatStatus = useRevenueCatStatus();
+  const proGating = useProGating();
+  const proGatingLine = formatProGating(proGating);
   const proLabel = !isPro ? 'Free' : pro.isTrial ? 'Pro trial' : 'Pro';
   const proExpires = formatProExpiration(pro.expirationDate) ?? DIAGNOSTICS_DASH;
 
@@ -146,6 +150,8 @@ export default function DiagnosticsScreen() {
         <Field styles={styles} label="Status" value={proLabel} />
         <View style={styles.divider} />
         <Field styles={styles} label="RevenueCat" value={revenueCatStatus.replace(/^RevenueCat: /, '')} />
+        <View style={styles.divider} />
+        <Field styles={styles} label="Pro gating" value={proGatingLine} />
         <View style={styles.divider} />
         <Field styles={styles} label="Expires" value={proExpires} />
         {__DEV__ ? (

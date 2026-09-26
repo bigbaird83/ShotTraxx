@@ -7,6 +7,7 @@ import type { OsmOverlay } from '@/src/course/types';
 import { useDb } from '@/src/db/DbProvider';
 import {
   deletePenalty,
+  fillAutoShotLies,
   getClubMap,
   getRound,
   listClubAverages,
@@ -14,6 +15,7 @@ import {
   listHoles,
   listPenaltiesForHole,
   listShotsForHole,
+  setShotLie,
   updatePenaltyReason,
 } from '@/src/db/repo';
 import { formatClubStripLabel, planClubStrip, toWheelFillClub } from '@/src/domain/clubStrip';
@@ -24,6 +26,8 @@ import { PENALTY_REASONS } from '@/src/domain/penalty';
 import { penaltyNoteForSave, penaltyStepActionSheet } from '@/src/domain/penaltyEdit';
 import { orderHoleSteps, type OrderedHoleStep } from '@/src/domain/penaltySteps';
 import { COPY } from '@/src/domain/playerCopy';
+import { SHOT_LIE_LABELS, SHOT_LIES, type ShotLie } from '@/src/domain/shotLie';
+import { holeStrokesGained, strokesGainedChip, type SgHole } from '@/src/domain/strokesGained';
 import { deleteShotPrompt } from '@/src/domain/deleteShot';
 import { frameMapCenter, moveSpotDraftOrigin, shotStoredPosition } from '@/src/domain/shotEdit';
 import {
@@ -37,6 +41,7 @@ import {
   shotReviewShotListWindow,
 } from '@/src/domain/shotReviewLayout';
 import type { Club, PenaltyReason, Shot } from '@/src/domain/types';
+import { useProFeature } from '@/src/services/proFeature';
 import { changeShotClub, deleteHoleShot, moveShotSpot } from '@/src/services/shotActions';
 import { getCurrentFix } from '@/src/services/location';
 import { BigButton } from '@/src/ui/BigButton';
@@ -64,6 +69,7 @@ const REVIEW_TRAIL_TO_GREEN = { yards: null, quality: 'none' as const };
 export default function ReviewShotsScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const { db, revision, bump } = useDb();
+  const strokesGainedOn = useProFeature();
   const colors = useColors();
   const styles = useMemo(() => makeStyles(colors), [colors]);
   const [osmOverlay, setOsmOverlay] = useState<OsmOverlay | null>(null);
@@ -88,6 +94,10 @@ export default function ReviewShotsScreen() {
   const shots = useMemo(() => (hole ? listShotsForHole(db, hole.id) : []), [db, hole, revision]);
   const penalties = useMemo(() => (hole ? listPenaltiesForHole(db, hole.id) : []), [db, hole, revision]);
   const holeSteps = useMemo(() => orderHoleSteps(shots, penalties), [shots, penalties]);
+  const holeSg = useMemo(
+    () => (hole ? holeStrokesGained({ ...hole, shots, penalties }) : null),
+    [hole, shots, penalties],
+  );
 
   useEffect(() => {
     if (!round || round.courseLat == null || round.courseLng == null) {
@@ -111,6 +121,12 @@ export default function ReviewShotsScreen() {
       live = false;
     };
   }, [round]);
+
+  // Auto lie for this hole from the course outlines. Player taps stay.
+  useEffect(() => {
+    if (!hole || !osmOverlay) return;
+    if (fillAutoShotLies(db, [hole.id], osmOverlay.features) > 0) bump();
+  }, [db, hole, osmOverlay, shots, bump]);
 
   if (!round) {
     return (
@@ -139,6 +155,7 @@ export default function ReviewShotsScreen() {
   // Fit tee → GPS shot pins → green to the measured map slot. Putts are not pins.
   const camera = hole ? shotReviewCamera({ tee, green, shotPins, box: mapBox }) : null;
   const editingShot = editShotId ? shots.find((shot) => shot.id === editShotId) ?? null : null;
+  const holeSgChip = strokesGainedOn && holeSg ? strokesGainedChip(holeSg.total) : null;
   const framePoints = shotReviewFramePoints({ tee, green, shotPins });
   const bag = clubList.filter((club) => !isPutterClubId(club.id));
   const stripPlan = planClubStrip({
@@ -224,6 +241,12 @@ export default function ReviewShotsScreen() {
     setMoveDropped(false);
     setMoveDraft(null);
     setEditOpen(true);
+    bump();
+  };
+
+  const commitLie = (lie: ShotLie | null) => {
+    if (!editShotId) return;
+    setShotLie(db, editShotId, lie);
     bump();
   };
 
@@ -323,7 +346,10 @@ export default function ReviewShotsScreen() {
 
       <View style={styles.holeColumn}>
         {hole ? (
-          <Text style={styles.label}>{shotReviewHoleHeader(hole)}</Text>
+          <Text style={styles.label}>
+            {shotReviewHoleHeader(hole)}
+            {holeSgChip ? ` · ${holeSgChip}` : ''}
+          </Text>
         ) : null}
         <View
           style={styles.mapSlot}
@@ -373,12 +399,19 @@ export default function ReviewShotsScreen() {
       </View>
 
       <View style={styles.bottom} testID="shot-review-bottom">
+        {hole && !strokesGainedOn ? (
+          <Text style={styles.muted} testID="shot-review-strokes-gained-pro">
+            {COPY.strokesGainedPro}
+          </Text>
+        ) : null}
         {hole && (shots.length > 0 || penalties.length > 0 || puttLines.length > 0) ? (
           <ReviewShotList
             key={hole.id}
             shots={shots}
             steps={holeSteps}
             puttLines={puttLines}
+            showStrokesGained={strokesGainedOn}
+            holeSg={holeSg}
             clubs={clubs}
             textStyle={styles.muted}
             listStyle={styles.shotList}
@@ -431,6 +464,41 @@ export default function ReviewShotsScreen() {
           {editingShot ? (
             <>
               <BigButton label={COPY.changeClub} onPress={() => setClubOpen(true)} />
+              {strokesGainedOn && editingShot.seq > 1 ? (
+                <View style={styles.lieBlock} testID="shot-lie-picker">
+                  <Text style={styles.lieTitle}>
+                    {COPY.shotLie}
+                    {editingShot.lie
+                      ? ` · ${SHOT_LIE_LABELS[editingShot.lie]}${editingShot.lieSource === 'auto' ? ` (${COPY.shotLieAuto})` : ''}`
+                      : ` · ${COPY.shotLieUnknown}`}
+                  </Text>
+                  <View style={styles.reasonRow}>
+                    {SHOT_LIES.map((lie) => {
+                      const on = editingShot.lie === lie;
+                      return (
+                        <Pressable
+                          key={lie}
+                          accessibilityRole="button"
+                          accessibilityState={{ selected: on }}
+                          testID={`shot-lie-${lie}`}
+                          onPress={() => commitLie(lie)}
+                          style={[styles.reasonChip, on && styles.reasonOn]}>
+                          <Text style={styles.reasonText}>{SHOT_LIE_LABELS[lie]}</Text>
+                        </Pressable>
+                      );
+                    })}
+                    {editingShot.lieSource === 'player' ? (
+                      <Pressable
+                        accessibilityRole="button"
+                        testID="shot-lie-auto"
+                        onPress={() => commitLie(null)}
+                        style={styles.reasonChip}>
+                        <Text style={styles.reasonText}>{COPY.shotLieAuto}</Text>
+                      </Pressable>
+                    ) : null}
+                  </View>
+                </View>
+              ) : null}
               <BigButton label={COPY.moveSpot} variant="secondary" onPress={() => void startMoveSpot()} />
               <BigButton
                 label={COPY.deleteShot}
@@ -518,6 +586,8 @@ function ReviewShotList({
   shots,
   steps,
   puttLines,
+  showStrokesGained,
+  holeSg,
   clubs,
   textStyle,
   listStyle,
@@ -528,6 +598,8 @@ function ReviewShotList({
   shots: Shot[];
   steps: OrderedHoleStep[];
   puttLines: string[];
+  showStrokesGained: boolean;
+  holeSg: SgHole | null;
   clubs: Record<string, Club>;
   textStyle: StyleProp<TextStyle>;
   listStyle: StyleProp<ViewStyle>;
@@ -561,6 +633,9 @@ function ReviewShotList({
         }
         const shot = shots[step.sourceIndex];
         if (!shot) return null;
+        const sgChip = showStrokesGained
+          ? strokesGainedChip(holeSg?.shots.find((row) => row.shotId === shot.id)?.sg ?? null)
+          : null;
         return (
           <Pressable
             key={shot.id}
@@ -569,15 +644,21 @@ function ReviewShotList({
             <Text style={textStyle}>
               {shot.seq}. {shot.clubId ? (clubs[shot.clubId]?.name ?? 'Club') : '—'}
               {shot.distanceYards != null ? ` · ${Math.round(shot.distanceYards)} yd` : ''}
+              {showStrokesGained && shot.seq > 1 && shot.lie ? ` · ${SHOT_LIE_LABELS[shot.lie]}` : ''}
+              {sgChip ? ` · ${sgChip}` : ''}
             </Text>
           </Pressable>
         );
       })}
-      {puttLines.map((line, i) => (
-        <Text key={`putt-${i}`} style={textStyle}>
-          {line}
-        </Text>
-      ))}
+      {puttLines.map((line, i) => {
+        const putting = showStrokesGained && i === 0 ? strokesGainedChip(holeSg?.puttingSg ?? null) : null;
+        return (
+          <Text key={`putt-${i}`} style={textStyle}>
+            {line}
+            {putting ? ` · Putting ${putting}` : ''}
+          </Text>
+        );
+      })}
     </ScrollView>
   );
 }
@@ -622,6 +703,8 @@ function makeStyles(colors: ColorPalette) {
     navBtn: { flex: 1 },
     sheetPad: { gap: 12, padding: 16 },
     placeGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+    lieBlock: { gap: 8 },
+    lieTitle: { color: colors.cream, fontSize: 16, fontWeight: '800' },
     reasonRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
     reasonChip: {
       minHeight: 48,
