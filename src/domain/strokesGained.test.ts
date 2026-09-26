@@ -251,10 +251,13 @@ test('a shot with no lie matches the fairway/rough mean strokes gained uses toda
   close(omitted.unsplit, 0);
 });
 
-test('format and weakest category', () => {
+test('shot chip reads SG with a sign, or nothing', () => {
   assert.equal(strokesGainedChip(0.34), 'SG +0.3');
   assert.equal(strokesGainedChip(-1.26), 'SG −1.3');
   assert.equal(strokesGainedChip(null), null);
+});
+
+test('format and weakest category', () => {
   assert.equal(formatStrokesGained(1.24), '+1.2');
   assert.equal(formatStrokesGained(-0.46), '−0.5');
   assert.equal(formatStrokesGained(0.02), '0.0');
