@@ -6,10 +6,26 @@ final class ShotTraxxWatchDelegate: NSObject, WKApplicationDelegate {
   /// watchOS relaunches the app to reclaim an HKWorkoutSession that outlived
   /// the process. Hand that session back so a second one is never created.
   func handleActiveWorkoutRecovery() {
-    WatchClubSession.shared.beginGolfWorkoutRecovery()
-    HKHealthStore().recoverActiveWorkoutSession { session, error in
+    let club = WatchClubSession.shared
+    club.beginGolfWorkoutRecovery()
+    // recoverActiveWorkoutSession is the one call that returns the session
+    // still active after a crash. Creating another one throws.
+    guard HKHealthStore.isHealthDataAvailable() else {
       DispatchQueue.main.async {
-        WatchClubSession.shared.finishGolfWorkoutRecovery(session, error: error)
+        club.finishGolfWorkoutRecovery(
+          nil,
+          error: NSError(
+            domain: "com.shottrax.app.watch",
+            code: 1,
+            userInfo: [NSLocalizedDescriptionKey: "HealthKit unavailable"]
+          )
+        )
+      }
+      return
+    }
+    HKHealthStore().recoverActiveWorkoutSession { recovered, error in
+      DispatchQueue.main.async {
+        club.finishGolfWorkoutRecovery(recovered, error: error)
       }
     }
   }
@@ -37,6 +53,7 @@ struct ShotTraxxWatchApp: App {
       ShotTraxxWatchRoot(session: session)
     }
     .backgroundTask(.watchConnectivity) {
+      // Not the main actor. drainConnectivity applies session state on MainActor.
       await WatchClubSession.drainConnectivity()
     }
     .backgroundTask(.snapshot) { _ in

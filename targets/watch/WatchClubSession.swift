@@ -221,6 +221,12 @@ struct PuttSheetState {
   }
 }
 
+/// `@Published` storage is Combine's lock. SwiftUI holds that lock during a
+/// scene-create view update. A setter from the WCSession queue takes the same
+/// lock and then waits on SwiftUI, so the two threads deadlock (0x8badf00d).
+/// The class stays off `@MainActor`: it is an `NSObject` plus three system
+/// delegates, and every `sendMessage` reply would have to be rewritten.
+/// Callbacks hop, and the mutators trap if they are not on the main queue.
 final class WatchClubSession: NSObject, ObservableObject, WCSessionDelegate, CLLocationManagerDelegate, HKWorkoutSessionDelegate {
   /// One session for the app and for background WatchConnectivity launches.
   static let shared = WatchClubSession()
@@ -228,15 +234,27 @@ final class WatchClubSession: NSObject, ObservableObject, WCSessionDelegate, CLL
   /// Background WatchConnectivity task: stay up until the delivered clubList
   /// (application context / complication userInfo) has been applied, so the app
   /// group and the ShotTraxxHole widget move while the Watch app is not in front.
+  /// The task is not the main actor. Published state is applied only inside
+  /// `MainActor.run`, after the delegate callbacks have queued their hops.
   static func drainConnectivity() async {
-    _ = shared
+    await MainActor.run {
+      _ = shared
+    }
     for _ in 0..<40 {
-      let wc = WCSession.default
-      if wc.activationState == .activated && !wc.hasContentPending { break }
+      let settled = await MainActor.run { () -> Bool in
+        guard WCSession.isSupported() else { return true }
+        let wc = WCSession.default
+        return wc.activationState == .activated && !wc.hasContentPending
+      }
+      if settled { break }
       try? await Task.sleep(nanoseconds: 250_000_000)
     }
-    // Let the main-queue applyClubList → persist → reload run before we return.
-    try? await Task.sleep(nanoseconds: 250_000_000)
+    // Delegate callbacks enqueue applyClubList with DispatchQueue.main.async.
+    // This turn is queued after those blocks, so the write finishes on main
+    // before the background task returns. Do not hop synchronously onto main.
+    await MainActor.run {
+      _ = shared
+    }
   }
 
   @Published var list = ClubListState()
@@ -319,8 +337,17 @@ final class WatchClubSession: NSObject, ObservableObject, WCSessionDelegate, CLL
   private let pendingQueueKey = "pendingWatchQueue"
   private var golfWorkout: HKWorkoutSession?
   private var endingGolfWorkout = false
+  /// The object already passed to `end()`. A second `end()` of it raises.
+  private var endingSession: HKWorkoutSession?
   /// `handleActiveWorkoutRecovery` is in flight. Do not create another session.
   private var recoveringGolfWorkout = false
+  /// True from init until the next main turn. `handleActiveWorkoutRecovery`
+  /// runs during launch, before that turn, when a session outlived the process.
+  private var workoutLaunchGate = false
+  /// Set when the system asks us to recover. The launch gate must not start one.
+  private var workoutRecoveryRequested = false
+  /// Set around `HKWorkoutSession` init so a synchronous callback cannot start another.
+  private var creatingGolfWorkout = false
   private var loggedBlockedGolfStart = false
   private var loggedStaleRoundSkip = false
   private var golfAuthInFlight = false
@@ -387,11 +414,8 @@ final class WatchClubSession: NSObject, ObservableObject, WCSessionDelegate, CLL
     // Do not request here. A complication push or workout often launches this
     // process in the background, and watchOS will not show the sheet then.
 
-    if WCSession.isSupported() {
-      let session = WCSession.default
-      session.delegate = self
-      session.activate()
-    }
+    // Defaults before activate(). The activation callback can otherwise mutate
+    // `list` while this init and the first body are still reading it.
     loadFromDefaults()
     seedAppLiveYardsFromList()
     loadHome()
@@ -405,9 +429,21 @@ final class WatchClubSession: NSObject, ObservableObject, WCSessionDelegate, CLL
       penaltyNotice = "Queued · will sync"
     }
     syncUndoPending()
+    // A crashed launch can leave an HKWorkoutSession. Do not create another
+    // until watchOS has had a chance to hand that one back.
+    holdWorkoutLaunchGate()
     syncRoundStay()
     syncLiveYardsReason()
     appLiveYardsFrozen = true
+
+    if WCSession.isSupported() {
+      let session = WCSession.default
+      session.delegate = self
+      session.activate()
+    }
+    // After activate(), so a callback queued inside activate() applies the
+    // live club list before this turn is allowed to start a workout.
+    scheduleWorkoutLaunchGateRelease()
   }
 
   /// Top-right live yards in the Watch app. Not the complication.
@@ -1352,10 +1388,17 @@ final class WatchClubSession: NSObject, ObservableObject, WCSessionDelegate, CLL
     return false
   }
 
+  /// Combine's `@Published` lock must be taken on the main queue. A setter from
+  /// a WCSession or location callback deadlocks the scene-create view update.
+  private func requireMainForPublishedState() {
+    dispatchPrecondition(condition: .onQueue(.main))
+  }
+
   /// Phone → Watch. sendMessage can reply; transferUserInfo cannot, so the
   /// phone also pushes `watchConfirm` with the accepted id. A duplicate id
   /// confirms again and removes nothing else. `ok` false leaves the queue.
   private func applyWatchAck(_ message: [String: Any]) -> Bool {
+    requireMainForPublishedState()
     guard (message["type"] as? String) == "watchConfirm" else { return false }
     guard replyIsOk(message) else { return true }
     let id = message["id"] as? String
@@ -1464,6 +1507,7 @@ final class WatchClubSession: NSObject, ObservableObject, WCSessionDelegate, CLL
   }
 
   private func handleReply(_ reply: [String: Any], fallbackClubId: String?, type: String? = nil) {
+    requireMainForPublishedState()
     sending = false
     let ok = reply["ok"] as? Bool ?? false
     let text: String
@@ -1547,6 +1591,7 @@ final class WatchClubSession: NSObject, ObservableObject, WCSessionDelegate, CLL
   /// Phone list reply (e.g. a pick the phone could not open). Land back on
   /// Watch Home with the phone's line instead of a dead end.
   private func applyNearbyCourses(_ message: [String: Any]) {
+    requireMainForPublishedState()
     if hasLiveHole && !nearbyFromHome { return }
     var next = nearby
     next.active = true
@@ -1594,6 +1639,7 @@ final class WatchClubSession: NSObject, ObservableObject, WCSessionDelegate, CLL
   /// Phone → Watch Home. Phone favorites win, except a Watch star the phone
   /// has not seen yet (kept for a short window so the row does not flicker).
   private func applyWatchHome(_ message: [String: Any], save: Bool = true) {
+    requireMainForPublishedState()
     var next = WatchHomeState()
     next.favorites = parseHomeRows(message["favorites"], favorite: true)
     next.nearby = parseHomeRows(message["nearby"], favorite: false)
@@ -1653,6 +1699,7 @@ final class WatchClubSession: NSObject, ObservableObject, WCSessionDelegate, CLL
   }
 
   private func applyNearbyTees(_ message: [String: Any]) {
+    requireMainForPublishedState()
     if hasLiveHole && !nearbyFromHome { return }
     var next = nearby
     next.active = true
@@ -1675,6 +1722,7 @@ final class WatchClubSession: NSObject, ObservableObject, WCSessionDelegate, CLL
   }
 
   private func applyClubList(_ message: [String: Any], fromPhone: Bool = false) {
+    requireMainForPublishedState()
     let type = message["type"] as? String
     // Application context carries the latest Watch Home next to clubList.
     if let nested = message["watchHome"] as? [String: Any] {
@@ -1891,6 +1939,7 @@ final class WatchClubSession: NSObject, ObservableObject, WCSessionDelegate, CLL
   }
 
   private func applyPuttSheet(_ message: [String: Any]) {
+    requireMainForPublishedState()
     let priorPending = putt.pending
     let priorLengths = putt.lengths
     var next = PuttSheetState()
@@ -1992,6 +2041,7 @@ final class WatchClubSession: NSObject, ObservableObject, WCSessionDelegate, CLL
   /// Walking update. A locked phone sends nothing. This keeps the latest yards
   /// for the complication. The on-screen number stays put while the wrist is down.
   private func adoptWatchFix(_ fix: CLLocation) {
+    requireMainForPublishedState()
     let accuracy = fix.horizontalAccuracy
     let accuracyText = String(format: "%.1f", accuracy)
     guard let greenLat = list.greenLat, let greenLng = list.greenLng else {
@@ -2218,6 +2268,7 @@ final class WatchClubSession: NSObject, ObservableObject, WCSessionDelegate, CLL
   }
 
   private func flushPending() {
+    requireMainForPublishedState()
     guard WCSession.isSupported(), WCSession.default.isReachable else { return }
     dropStaleClubPicks(liveHole: list.holeNumber)
     if let legacy = pendingPick {
@@ -2268,6 +2319,7 @@ final class WatchClubSession: NSObject, ObservableObject, WCSessionDelegate, CLL
   }
 
   private func syncRoundStay() {
+    requireMainForPublishedState()
     let next = roundLooksLive && roundIsFresh
     if next && !wantsStay {
       suppressGolfStart = false
@@ -2483,23 +2535,53 @@ final class WatchClubSession: NSObject, ObservableObject, WCSessionDelegate, CLL
     }
   }
 
+  /// One HKWorkoutSession per process. Recovery, a create already in this
+  /// function, and a session that has not ended all refuse another init:
+  /// a second `HKWorkoutSession` throws, and a second `startActivity` raises.
+  /// Mirrors `watchMayCreateGolfWorkout` in src/domain/watchColdLaunch.ts.
+  private static func mayCreateGolfWorkout(
+    launchGate: Bool,
+    recovering: Bool,
+    ending: Bool,
+    creating: Bool,
+    hasSession: Bool,
+    sessionEnded: Bool
+  ) -> Bool {
+    if launchGate || recovering || ending || creating { return false }
+    if hasSession && !sessionEnded { return false }
+    return true
+  }
+
   private func beginGolfWorkoutSession() {
-    if recoveringGolfWorkout {
-      if !loggedBlockedGolfStart {
-        loggedBlockedGolfStart = true
-        workoutLog.info("golf workout not started; recoverActiveWorkoutSession in progress")
-      }
-      return
+    if golfWorkout?.state == .ended {
+      golfWorkout = nil
+      endingGolfWorkout = false
     }
-    if golfWorkoutOccupied {
+    let allowed = Self.mayCreateGolfWorkout(
+      launchGate: workoutLaunchGate,
+      recovering: recoveringGolfWorkout,
+      ending: endingGolfWorkout,
+      creating: creatingGolfWorkout,
+      hasSession: golfWorkout != nil,
+      sessionEnded: false
+    )
+    if !allowed {
       if !loggedBlockedGolfStart {
         loggedBlockedGolfStart = true
-        workoutLog.info("golf workout not started; a session is already running")
+        if recoveringGolfWorkout {
+          workoutLog.info("golf workout not started; recoverActiveWorkoutSession in progress")
+        } else if workoutLaunchGate {
+          workoutLog.info("golf workout not started; waiting for workout recovery")
+        } else {
+          workoutLog.info("golf workout not started; a session is already running")
+        }
       }
       return
     }
     if suppressGolfStart { return }
     loggedBlockedGolfStart = false
+    creatingGolfWorkout = true
+    defer { creatingGolfWorkout = false }
     let configuration = HKWorkoutConfiguration()
     configuration.activityType = .golf
     configuration.locationType = .outdoor
@@ -2508,7 +2590,18 @@ final class WatchClubSession: NSObject, ObservableObject, WCSessionDelegate, CLL
       session.delegate = self
       golfWorkout = session
       // end() writes nothing to Health. No builder and no extra sample types.
-      session.startActivity(with: Date())
+      // startActivity raises if this session is already running. A brand-new
+      // session is prepared; running/paused/ended must not be started again.
+      if session.state == .running || session.state == .paused {
+        workoutLog.info("golf workout already running; startActivity not called again")
+      } else if session.state == .ended {
+        golfWorkout = nil
+        suppressGolfStart = true
+        workoutLog.info("golf workout session did not start: session already ended")
+        return
+      } else {
+        session.startActivity(with: Date())
+      }
       // Location background mode is in the watch Info.plist. The property and
       // that mode ship together; setting it without the mode crashes.
       enableWorkoutBackgroundLocation()
@@ -2521,20 +2614,66 @@ final class WatchClubSession: NSObject, ObservableObject, WCSessionDelegate, CLL
     }
   }
 
+  /// `end()` raises unless the session is running or paused, and a second
+  /// `end()` of the same object raises. Nil and already-ended are dropped.
+  /// Mirrors `watchGolfWorkoutEnd` in src/domain/watchColdLaunch.ts.
+  private enum GolfWorkoutEndAction {
+    case dropNil
+    case dropEnded
+    case alreadyEnding
+    case end
+    case skipNotRunning
+  }
+
+  private static func golfWorkoutEndAction(
+    hasSession: Bool,
+    ended: Bool,
+    runningOrPaused: Bool,
+    endingThisSession: Bool
+  ) -> GolfWorkoutEndAction {
+    if !hasSession { return .dropNil }
+    if ended { return .dropEnded }
+    if endingThisSession { return .alreadyEnding }
+    if runningOrPaused { return .end }
+    return .skipNotRunning
+  }
+
+  private func endGolfWorkout(_ session: HKWorkoutSession?) {
+    let endingThisSession = session.map { endingSession === $0 } ?? false
+    let action = Self.golfWorkoutEndAction(
+      hasSession: session != nil,
+      ended: session?.state == .ended,
+      runningOrPaused: session?.state == .running || session?.state == .paused,
+      endingThisSession: endingThisSession
+    )
+    switch action {
+    case .dropNil:
+      if endingSession == nil { endingGolfWorkout = false }
+    case .dropEnded:
+      if let session {
+        if golfWorkout === session { golfWorkout = nil }
+        if endingSession === session {
+          endingSession = nil
+          endingGolfWorkout = false
+        }
+      }
+    case .alreadyEnding:
+      break
+    case .end:
+      guard let session else { return }
+      endingSession = session
+      endingGolfWorkout = true
+      session.end()
+    case .skipNotRunning:
+      workoutLog.info("golf workout not ended; session is not running")
+      if let session, golfWorkout === session { golfWorkout = nil }
+      if endingSession == nil { endingGolfWorkout = false }
+    }
+  }
+
   private func stopRoundStay() {
     disableWorkoutBackgroundLocation()
-    guard let session = golfWorkout else {
-      endingGolfWorkout = false
-      return
-    }
-    if session.state == .ended {
-      golfWorkout = nil
-      endingGolfWorkout = false
-      return
-    }
-    if endingGolfWorkout { return }
-    endingGolfWorkout = true
-    session.end()
+    endGolfWorkout(golfWorkout)
   }
 
   func workoutSession(
@@ -2554,10 +2693,13 @@ final class WatchClubSession: NSObject, ObservableObject, WCSessionDelegate, CLL
         }
       }
       if toState == .ended {
+        if self.endingSession === workoutSession {
+          self.endingSession = nil
+          self.endingGolfWorkout = false
+        }
         if self.golfWorkout === workoutSession {
           self.golfWorkout = nil
         }
-        self.endingGolfWorkout = false
         self.disableWorkoutBackgroundLocation()
         self.syncLiveLocation()
       }
@@ -2578,9 +2720,38 @@ final class WatchClubSession: NSObject, ObservableObject, WCSessionDelegate, CLL
     }
   }
 
+  /// Block workout creation until `scheduleWorkoutLaunchGateRelease` runs.
+  /// Init's `syncRoundStay` happens while this is held.
+  private func holdWorkoutLaunchGate() {
+    workoutLaunchGate = true
+  }
+
+  /// Next main turn. Queued after `WCSession.activate()` so a club list
+  /// delivered inside activate is applied before a workout can start.
+  /// If the system is recovering, that callback starts or keeps the session.
+  private func scheduleWorkoutLaunchGateRelease() {
+    DispatchQueue.main.async { [weak self] in
+      self?.releaseWorkoutLaunchGateIfIdle()
+    }
+  }
+
+  private func releaseWorkoutLaunchGateIfIdle() {
+    guard workoutLaunchGate else { return }
+    if workoutRecoveryRequested || recoveringGolfWorkout {
+      workoutLaunchGate = false
+      return
+    }
+    workoutLaunchGate = false
+    loggedBlockedGolfStart = false
+    workoutLog.info("no recoverActiveWorkoutSession this launch; golf session may start")
+    syncRoundStay()
+  }
+
   /// Called from `handleActiveWorkoutRecovery` before `recoverActiveWorkoutSession`.
   func beginGolfWorkoutRecovery() {
+    workoutRecoveryRequested = true
     recoveringGolfWorkout = true
+    workoutLaunchGate = false
     loggedBlockedGolfStart = false
     workoutLog.info("recoverActiveWorkoutSession requested")
   }
@@ -2589,6 +2760,7 @@ final class WatchClubSession: NSObject, ObservableObject, WCSessionDelegate, CLL
   /// not fresh. This app does not use a workout builder.
   func finishGolfWorkoutRecovery(_ session: HKWorkoutSession?, error: Error?) {
     recoveringGolfWorkout = false
+    workoutLaunchGate = false
     if let error {
       workoutLog.info("recoverActiveWorkoutSession failed: \(error.localizedDescription, privacy: .public)")
       syncRoundStay()
@@ -2604,9 +2776,9 @@ final class WatchClubSession: NSObject, ObservableObject, WCSessionDelegate, CLL
       syncRoundStay()
       return
     }
-    if let created = golfWorkout, created !== session, created.state != .ended {
+    if let created = golfWorkout, created !== session {
       workoutLog.info("recovered golf workout; ending the session started this launch")
-      created.end()
+      endGolfWorkout(created)
     }
     // No workout builder is used. Reattach the delegate only.
     session.delegate = self
@@ -2624,21 +2796,27 @@ final class WatchClubSession: NSObject, ObservableObject, WCSessionDelegate, CLL
     syncRoundStay()
   }
 
+  // WCSession, CLLocationManager, and HKWorkoutSession callbacks are not the
+  // main thread. Hop with DispatchQueue.main.async before any @Published write.
+  // A synchronous hop onto main from these queues can deadlock the same way.
+  // Activation runs on every cold launch — a live round, a round that just
+  // ended, or no round — and overlaps the scene-create view update.
   func session(_ session: WCSession, activationDidCompleteWith activationState: WCSessionActivationState, error: Error?) {
-    // Last context from any launch. Not a receive during this process.
-    applyClubList(session.receivedApplicationContext)
-    if activationState == .activated {
-      flushPending()
-      DispatchQueue.main.async {
-        self.syncRoundStay()
-        if self.hasLiveHole && !self.nearbyFromHome {
-          self.nearby.active = false
-          return
-        }
-        self.nearby.active = true
-        self.nearby.awaitingSelect = true
-        self.requestHome()
+    // Last context from any launch — not a receive during this process.
+    let context = session.receivedApplicationContext
+    let activated = activationState == .activated
+    DispatchQueue.main.async {
+      self.applyClubList(context)
+      guard activated else { return }
+      self.flushPending()
+      self.syncRoundStay()
+      if self.hasLiveHole && !self.nearbyFromHome {
+        self.nearby.active = false
+        return
       }
+      self.nearby.active = true
+      self.nearby.awaitingSelect = true
+      self.requestHome()
     }
   }
 
@@ -2655,6 +2833,24 @@ final class WatchClubSession: NSObject, ObservableObject, WCSessionDelegate, CLL
     }
   }
 
+  func session(
+    _ session: WCSession,
+    didReceiveMessage message: [String: Any],
+    replyHandler: @escaping ([String: Any]) -> Void
+  ) {
+    // Reply after the hop. A synchronous hop from this queue deadlocks scene creation.
+    DispatchQueue.main.async {
+      if self.applyWatchAck(message) {
+        replyHandler([:])
+        return
+      }
+      self.applyClubList(message, fromPhone: true)
+      replyHandler([:])
+    }
+  }
+
+  /// Phone `transferCurrentComplicationUserInfo` arrives here on watchOS.
+  /// The iOS-only complication receive callback is not part of this delegate.
   func session(_ session: WCSession, didReceiveUserInfo userInfo: [String: Any] = [:]) {
     DispatchQueue.main.async {
       if self.applyWatchAck(userInfo) { return }
@@ -2662,12 +2858,35 @@ final class WatchClubSession: NSObject, ObservableObject, WCSessionDelegate, CLL
     }
   }
 
+  func session(_ session: WCSession, didFinish userInfoTransfer: WCSessionUserInfoTransfer, error: Error?) {
+    DispatchQueue.main.async {
+      // Outgoing transfer finished. Published state changes when the phone's
+      // watchConfirm arrives, not from this callback.
+      _ = userInfoTransfer
+      _ = error
+    }
+  }
+
+  func session(_ session: WCSession, didReceive file: WCSessionFile) {
+    DispatchQueue.main.async {
+      // The phone does not send files. Do not touch @Published state.
+      _ = file
+    }
+  }
+
+  func session(_ session: WCSession, didFinish fileTransfer: WCSessionFileTransfer, error: Error?) {
+    DispatchQueue.main.async {
+      _ = fileTransfer
+      _ = error
+    }
+  }
+
   func sessionReachabilityDidChange(_ session: WCSession) {
-    if session.isReachable {
-      DispatchQueue.main.async {
-        self.flushPending()
-        self.refreshHomeIfShowing()
-      }
+    let reachable = session.isReachable
+    DispatchQueue.main.async {
+      guard reachable else { return }
+      self.flushPending()
+      self.refreshHomeIfShowing()
     }
   }
 
