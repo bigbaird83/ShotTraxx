@@ -4,9 +4,12 @@ import { test } from 'node:test';
 import {
   watchLaunchCoverVisible,
   watchLocationAuthorizationWaitsForSplash,
+  watchSplashLateDismisses,
   watchSplashPlayGate,
   watchSplashPlayback,
   watchSplashVideoShown,
+  WATCH_SPLASH_LATE_NS,
+  WATCH_SPLASH_PLAY_RETRY_NS,
   WATCH_SPLASH_REVEAL_SETTLE_NS,
   WATCH_SPLASH_SAFETY_NS,
   WATCH_SPLASH_STALL_NS,
@@ -74,6 +77,7 @@ test('Watch splash plays over the app on cold start and never blocks it', () => 
   assert.match(splash, /reason: "safety"/);
   assert.match(splash, /reason: "failed"/);
   assert.match(splash, /reason: "ended"/);
+  assert.match(splash, /reason: "late"/);
   // Player and timers start only after the scene is active.
   const apply = splash.slice(splash.indexOf('private func applyPhase'), splash.indexOf('private func run'));
   assert.match(apply, /phase == \.active/);
@@ -85,10 +89,20 @@ test('Watch splash plays over the app on cold start and never blocks it', () => 
   const tryStart = splash.slice(splash.indexOf('private func tryStart'), splash.indexOf('private func startSafety'));
   assert.match(tryStart, /guard box\.sceneActive else \{ return \}/);
   assert.match(tryStart, /guard box\.item\.status == \.readyToPlay else \{ return \}/);
-  assert.ok(tryStart.indexOf('sceneActive') < tryStart.indexOf('player.play()'));
-  assert.ok(tryStart.indexOf('readyToPlay') < tryStart.indexOf('player.play()'));
-  assert.match(tryStart, /300_000_000/);
+  assert.ok(tryStart.indexOf('sceneActive') < tryStart.indexOf('playImmediately(atRate: 1)'));
+  assert.ok(tryStart.indexOf('readyToPlay') < tryStart.indexOf('playImmediately(atRate: 1)'));
+  assert.match(tryStart, /playRetryNanoseconds/);
   assert.match(tryStart, /timeControlStatus != \.playing/);
+  assert.doesNotMatch(splash, /300_000_000/);
+  assert.match(splash, /playRetryNanoseconds: UInt64 = 250_000_000/);
+  assert.match(splash, /lateNanoseconds: UInt64 = 1_500_000_000/);
+  assert.match(splash, /automaticallyWaitsToMinimizeStalling = false/);
+  assert.match(splash, /preroll\(atRate: 1\)/);
+  assert.match(splash, /play attempt/);
+  const late = splash.slice(splash.indexOf('private func startLateLimit'), splash.indexOf('private func startStallCeiling'));
+  assert.match(late, /lateNanoseconds/);
+  assert.match(late, /timeControlStatus != \.playing/);
+  assert.match(late, /dismiss\(fade: true, reason: "late"/);
   const safety = splash.slice(splash.indexOf('private func startSafety'), splash.indexOf('private func logPlayback'));
   assert.match(safety, /playback started/);
   assert.match(safety, /safetyNanoseconds/);
@@ -253,16 +267,41 @@ test('a fresh live round skips the splash and does not hold the location prompt'
 });
 
 test('play() waits for a ready item and an active scene; safety starts when the clip is moving', () => {
-  assert.equal(watchSplashPlayGate({ scene: 'active', itemStatus: 'unknown', playCalled: false }), 'wait');
-  assert.equal(watchSplashPlayGate({ scene: 'background', itemStatus: 'readyToPlay', playCalled: false }), 'wait');
-  assert.equal(watchSplashPlayGate({ scene: 'inactive', itemStatus: 'readyToPlay', playCalled: false }), 'wait');
-  assert.equal(watchSplashPlayGate({ scene: 'active', itemStatus: 'readyToPlay', playCalled: false }), 'play');
-  assert.equal(watchSplashPlayGate({ scene: 'active', itemStatus: 'readyToPlay', playCalled: true }), 'wait');
-  assert.equal(watchSplashPlayGate({ scene: 'active', itemStatus: 'failed', playCalled: false }), 'failed');
-  assert.equal(watchSplashShouldReplay({ timeControlStatus: 'paused', retried: false }), true);
-  assert.equal(watchSplashShouldReplay({ timeControlStatus: 'waiting', retried: false }), true);
-  assert.equal(watchSplashShouldReplay({ timeControlStatus: 'playing', retried: false }), false);
-  assert.equal(watchSplashShouldReplay({ timeControlStatus: 'paused', retried: true }), false);
+  assert.equal(watchSplashPlayGate({ scene: 'active', itemStatus: 'unknown', timeControlStatus: 'paused' }), 'wait');
+  assert.equal(watchSplashPlayGate({ scene: 'background', itemStatus: 'readyToPlay', timeControlStatus: 'paused' }), 'wait');
+  assert.equal(watchSplashPlayGate({ scene: 'inactive', itemStatus: 'readyToPlay', timeControlStatus: 'paused' }), 'wait');
+  assert.equal(watchSplashPlayGate({ scene: 'active', itemStatus: 'readyToPlay', timeControlStatus: 'paused' }), 'play');
+  assert.equal(watchSplashPlayGate({ scene: 'active', itemStatus: 'readyToPlay', timeControlStatus: 'waiting' }), 'play');
+  assert.equal(watchSplashPlayGate({ scene: 'active', itemStatus: 'readyToPlay', timeControlStatus: 'playing' }), 'wait');
+  assert.equal(watchSplashPlayGate({ scene: 'active', itemStatus: 'failed', timeControlStatus: 'paused' }), 'failed');
+  assert.equal(
+    watchSplashShouldReplay({ scene: 'active', itemStatus: 'readyToPlay', timeControlStatus: 'paused' }),
+    true,
+  );
+  assert.equal(
+    watchSplashShouldReplay({ scene: 'active', itemStatus: 'readyToPlay', timeControlStatus: 'waiting' }),
+    true,
+  );
+  assert.equal(
+    watchSplashShouldReplay({ scene: 'active', itemStatus: 'readyToPlay', timeControlStatus: 'playing' }),
+    false,
+  );
+  assert.equal(
+    watchSplashShouldReplay({ scene: 'background', itemStatus: 'readyToPlay', timeControlStatus: 'paused' }),
+    false,
+  );
+  assert.equal(
+    watchSplashShouldReplay({ scene: 'active', itemStatus: 'unknown', timeControlStatus: 'paused' }),
+    false,
+  );
+  assert.equal(watchSplashLateDismisses({ readyAndActive: false, playing: false, dismissing: false, elapsed: true }), false);
+  assert.equal(watchSplashLateDismisses({ readyAndActive: true, playing: true, dismissing: false, elapsed: true }), false);
+  assert.equal(watchSplashLateDismisses({ readyAndActive: true, playing: false, dismissing: true, elapsed: true }), false);
+  assert.equal(watchSplashLateDismisses({ readyAndActive: true, playing: false, dismissing: false, elapsed: false }), false);
+  assert.equal(watchSplashLateDismisses({ readyAndActive: true, playing: false, dismissing: false, elapsed: true }), true);
+  assert.equal(WATCH_SPLASH_PLAY_RETRY_NS, 250_000_000);
+  assert.equal(WATCH_SPLASH_LATE_NS, 1_500_000_000);
+  assert.ok(WATCH_SPLASH_LATE_NS < WATCH_SPLASH_STALL_NS);
   assert.equal(watchSplashVideoShown({ playing: false, settled: false, dismissing: false }), false);
   assert.equal(watchSplashVideoShown({ playing: false, settled: true, dismissing: false }), false);
   assert.equal(watchSplashVideoShown({ playing: true, settled: false, dismissing: false }), false);

@@ -41,27 +41,50 @@ export type WatchPlayerItemStatus = 'unknown' | 'readyToPlay' | 'failed';
 export type WatchTimeControlStatus = 'paused' | 'waiting' | 'playing';
 
 /**
- * play() waits until the item is ready and the scene is active.
- * A failed item dismisses. A second call does not play again.
+ * A failed item dismisses. Request playback only while the scene is active,
+ * the item is ready, and the clock is not already playing. The same rule
+ * allows another attempt about every 250 ms.
  */
 export function watchSplashPlayGate(args: {
   scene: WatchSplashScene;
   itemStatus: WatchPlayerItemStatus;
-  playCalled: boolean;
+  timeControlStatus: WatchTimeControlStatus;
 }): 'wait' | 'play' | 'failed' {
   if (args.itemStatus === 'failed') return 'failed';
-  if (args.playCalled) return 'wait';
-  if (args.scene === 'active' && args.itemStatus === 'readyToPlay') return 'play';
+  if (args.scene === 'active' && args.itemStatus === 'readyToPlay' && args.timeControlStatus !== 'playing') {
+    return 'play';
+  }
   return 'wait';
 }
 
-/** One more play() if the clock is not playing yet. */
+/** Keep requesting playback on that gate. Stops once the clock is playing. */
 export function watchSplashShouldReplay(args: {
+  scene: WatchSplashScene;
+  itemStatus: WatchPlayerItemStatus;
   timeControlStatus: WatchTimeControlStatus;
-  retried: boolean;
 }): boolean {
-  if (args.retried) return false;
-  return args.timeControlStatus !== 'playing';
+  return watchSplashPlayGate(args) === 'play';
+}
+
+/** Another start while still not playing. Mirrors `playRetryNanoseconds`. */
+export const WATCH_SPLASH_PLAY_RETRY_NS = 250_000_000;
+
+/**
+ * Fade home when the scene has been active and the item ready for this long
+ * and the clip is still not playing. The 6 s stall ceiling still covers an
+ * item that never becomes ready. Mirrors `lateNanoseconds`.
+ */
+export const WATCH_SPLASH_LATE_NS = 1_500_000_000;
+
+export function watchSplashLateDismisses(args: {
+  /** Both scene-active and `.readyToPlay` have been true. The late clock runs only then. */
+  readyAndActive: boolean;
+  playing: boolean;
+  dismissing: boolean;
+  elapsed: boolean;
+}): boolean {
+  if (!args.readyAndActive || args.playing || args.dismissing) return false;
+  return args.elapsed;
 }
 
 /**
