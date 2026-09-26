@@ -9,9 +9,17 @@ enum WatchSplashClip {
   /// 3.0s, portrait 392×584, H.264 Main, yuv420p, 24 fps, about 1 Mbps. No audio, no cover art.
   static let resource = "WatchSplash"
   static let fileExtension = "mov"
-  /// Frame 0 of the original full-resolution clip. Shown under the player and for Reduce Motion.
+  /// Frame 0 of the clip, for the logo cover and Reduce Motion.
+  /// Contained on the largest Apple Watch screen (Ultra 3 is 422×514 px): 345×514,
+  /// the same 392:584 art. Asset catalog, so the first frame does not decode the 784×1168 still.
   static let firstFrame = "WatchSplashFirstFrame"
   static let aspectRatio = 392.0 / 584.0
+  /// VideoPlayer stays this faint under the logo until the clip is actually showing.
+  /// Opacity 0 can skip drawing the first frame; this still hides the transport chrome.
+  static let concealedPlayerOpacity = 0.001
+  /// After `timeControlStatus == .playing`, wait so the first decoded frame is up
+  /// before the logo lifts. watchOS draws transport chrome only while paused.
+  static let revealSettleNanoseconds: UInt64 = 150_000_000
   /// Field behind the contained clip — the clip's own near-black edge.
   static let background = Color(red: 0, green: 1.0 / 255, blue: 1.0 / 255)
   /// Fade after the clip ends or a tap.
@@ -140,17 +148,28 @@ struct WatchSplash: View {
   @State private var playbackStarted = false
   @State private var loggedPending = false
   @State private var loggedMissingPoster = false
+  /// True only after playback has settled. False again when the player leaves `.playing`.
+  @State private var videoVisible = false
+  @State private var revealArmed = false
+  @State private var revealTicket = 0
 
   var body: some View {
     ZStack {
-      // Still is in this tree on the first frame. Playback is the only part that waits.
-      WatchSplashCover()
       if let player {
         // Contain, never fill: the clip is taller than any Watch screen.
-        // The still stays underneath so the first decoded frame is never a black gap.
+        // Under the logo until the clip is playing. watchOS VideoPlayer paints a
+        // pause glyph while paused or loading, and AVKit has no controls-free
+        // surface on watchOS. Near-zero opacity lets the first frame decode
+        // without that chrome showing through the cover.
         VideoPlayer(player: player)
           .aspectRatio(WatchSplashClip.aspectRatio, contentMode: .fit)
           .allowsHitTesting(false)
+          .accessibilityHidden(true)
+          .opacity(videoVisible ? 1 : WatchSplashClip.concealedPlayerOpacity)
+      }
+      if !videoVisible {
+        // Still is in this tree on the first frame. Playback is the only part that waits.
+        WatchSplashCover()
       }
     }
     .ignoresSafeArea()
@@ -247,6 +266,9 @@ struct WatchSplash: View {
         logPlayback(status: box.item.status, control: control, waiting: waiting, error: SplashPlaybackBox.errorText(box.item))
         if control == .playing {
           startSafety(box)
+          armReveal()
+        } else {
+          concealPlayback()
         }
       case .sceneActive:
         tryStart(box)
@@ -334,6 +356,9 @@ struct WatchSplash: View {
       let detailLabel = detail
       WatchSplashClip.splashLog.info("dismissed (reason: \(reasonLabel, privacy: .public)) \(detailLabel, privacy: .public)")
     }
+    // Cover the player before pause. watchOS paints the pause glyph as soon as
+    // playback stops, including the fade at the end of the clip.
+    concealPlayback()
     player?.pause()
     guard fade else {
       onDone()
@@ -345,6 +370,41 @@ struct WatchSplash: View {
     Task {
       try? await Task.sleep(nanoseconds: WatchSplashClip.fadeNanoseconds)
       onDone()
+    }
+  }
+
+  /// Lift the logo once `.playing` has been observed and the first frame has settled.
+  /// Another `.playing` event does not restart that wait.
+  private func armReveal() {
+    guard !dismissing, !videoVisible, !revealArmed else { return }
+    revealArmed = true
+    revealTicket += 1
+    let ticket = revealTicket
+    Task { @MainActor in
+      try? await Task.sleep(nanoseconds: WatchSplashClip.revealSettleNanoseconds)
+      guard ticket == revealTicket, !dismissing else { return }
+      guard playbackBox?.player.timeControlStatus == .playing else {
+        revealArmed = false
+        return
+      }
+      var transaction = Transaction()
+      transaction.disablesAnimations = true
+      withTransaction(transaction) {
+        videoVisible = true
+        revealArmed = false
+      }
+    }
+  }
+
+  /// Logo back on top, with no animation, so a pause glyph cannot appear.
+  private func concealPlayback() {
+    revealTicket += 1
+    revealArmed = false
+    guard videoVisible else { return }
+    var transaction = Transaction()
+    transaction.disablesAnimations = true
+    withTransaction(transaction) {
+      videoVisible = false
     }
   }
 }

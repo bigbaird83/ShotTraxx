@@ -64,6 +64,23 @@ export function watchSplashShouldReplay(args: {
   return args.timeControlStatus !== 'playing';
 }
 
+/**
+ * The clip picture is up only after `timeControlStatus == .playing` has settled.
+ * Until then, whenever playback stops, and again once the splash is dismissing,
+ * the logo covers VideoPlayer so watchOS transport chrome is not on screen.
+ * Mirrors `videoVisible` / `revealSettleNanoseconds`.
+ */
+export function watchSplashVideoShown(args: {
+  playing: boolean;
+  settled: boolean;
+  dismissing: boolean;
+}): boolean {
+  return args.playing && args.settled && !args.dismissing;
+}
+
+/** After playback is observed, wait so the first decoded frame is up. Mirrors `revealSettleNanoseconds`. */
+export const WATCH_SPLASH_REVEAL_SETTLE_NS = 150_000_000;
+
 /** The 5 s safety clock starts when the clip is actually moving. Mirrors `safetyNanoseconds`. */
 export const WATCH_SPLASH_SAFETY_NS = 5_000_000_000;
 
