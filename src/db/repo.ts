@@ -24,7 +24,14 @@ import {
   isFirstLaunchTipSeen,
 } from '../domain/firstLaunchTip';
 import { planInsertPlacedShot } from '../domain/insertShot';
+import type { OsmFeature } from '../course/types';
 import type { SgHoleIn } from '../domain/strokesGained';
+import {
+  parseShotLie,
+  parseShotLieSource,
+  planAutoShotLies,
+  type ShotLie,
+} from '../domain/shotLie';
 import {
   COURSE_DISTANCE_SETTING_KEY,
   parseCourseDistanceUnit,
@@ -202,6 +209,8 @@ type ShotRow = {
   suggested: number | null;
   average_eligible_at: string | null;
   hole_out: number | null;
+  lie?: string | null;
+  lie_source?: string | null;
 };
 
 type PenaltyRow = {
@@ -331,6 +340,8 @@ function mapShot(row: ShotRow): Shot {
     suggested: row.suggested === 1,
     holeOut: (row.hole_out ?? 0) === 1,
     averageEligibleAt: row.average_eligible_at ?? null,
+    lie: parseShotLie(row.lie),
+    lieSource: parseShotLie(row.lie) ? parseShotLieSource(row.lie_source) : null,
   };
 }
 
@@ -756,6 +767,8 @@ export function collectRoundHistoryExport(db: SQLiteDatabase, exportedAt: string
         suggested: shot.suggested,
         holeOut: shot.holeOut,
         averageEligibleAt: shot.averageEligibleAt ?? null,
+        lie: shot.lie ?? null,
+        lieSource: shot.lieSource ?? null,
       })),
     })),
   }));
@@ -975,8 +988,9 @@ function insertTransferredRound(
           start_lat, start_lng, start_accuracy_m, start_fix_quality,
           end_lat, end_lng, end_accuracy_m, end_fix_quality,
           distance_yards, typed_yards, fix_quality, impossible_jump,
-          started_at, ended_at, source, suggested, average_eligible_at, hole_out
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          started_at, ended_at, source, suggested, average_eligible_at, hole_out,
+          lie, lie_source
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           newId(),
           holeId,
@@ -1000,6 +1014,8 @@ function insertTransferredRound(
           shot.suggested ? 1 : 0,
           shot.averageEligibleAt,
           shot.holeOut ? 1 : 0,
+          shot.playerLie ?? null,
+          shot.playerLie ? 'player' : null,
         ],
       );
     }
@@ -1070,6 +1086,7 @@ function storedRoundAsTransfer(db: SQLiteDatabase, id: string): RoundTransferRou
         suggested: shot.suggested,
         holeOut: shot.holeOut,
         averageEligibleAt: shot.averageEligibleAt ?? null,
+        ...(shot.lieSource === 'player' && shot.lie ? { playerLie: shot.lie } : {}),
       });
     }
     const green = pointOrNull(hole.greenLat, hole.greenLng);
@@ -1622,6 +1639,36 @@ export function attachHolePuttLength(
     holeId,
   ]);
   return true;
+}
+
+/** Player lie tap. Null clears the tap so auto lie reads again. */
+export function setShotLie(db: SQLiteDatabase, shotId: string, lie: ShotLie | null): void {
+  db.runSync('UPDATE shots SET lie = ?, lie_source = ? WHERE id = ?', [lie, lie ? 'player' : null, shotId]);
+}
+
+/**
+ * Auto lie from mapped outlines for these holes' shots. Pass only holes the
+ * outlines cover. Returns rows written. A `player` lie is never overwritten,
+ * and a second call with the same outlines writes nothing.
+ */
+export function fillAutoShotLies(
+  db: SQLiteDatabase,
+  holeIds: readonly string[],
+  features: readonly OsmFeature[] | null | undefined,
+): number {
+  if (!features || features.length === 0) return 0;
+  let written = 0;
+  for (const holeId of holeIds) {
+    for (const write of planAutoShotLies(listShotsForHole(db, holeId), features)) {
+      db.runSync('UPDATE shots SET lie = ?, lie_source = ? WHERE id = ?', [
+        write.lie,
+        write.lie ? 'auto' : null,
+        write.id,
+      ]);
+      written += 1;
+    }
+  }
+  return written;
 }
 
 /** Green pin from current GPS, a map long-press, or a course centroid. Never invented. */

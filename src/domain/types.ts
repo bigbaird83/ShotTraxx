@@ -1,4 +1,5 @@
 import type { FairwayResult } from './fairwayGir';
+import type { ShotLie, ShotLieSource } from './shotLie';
 
 export type FixQuality = 'good' | 'soft' | 'forced';
 
@@ -137,6 +138,10 @@ export type Shot = {
    * 5s Undo window never moves the average.
    */
   averageEligibleAt?: string | null;
+  /** Lie at the start, for strokes gained. Null → unknown. */
+  lie?: ShotLie | null;
+  /** `player` taps are never overwritten by auto lie. */
+  lieSource?: ShotLieSource | null;
 };
 
 export type PenaltyKind = 'drop' | 'penalty';
