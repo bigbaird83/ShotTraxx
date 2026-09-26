@@ -285,6 +285,13 @@ final class WatchClubSession: NSObject, ObservableObject, WCSessionDelegate, CLL
   /// Live clubList (`roundLive`, not complete) from WatchConnectivity this process.
   /// Loading the saved app-group club list does not set this.
   private var receivedLiveListThisLaunch = false
+  /// `didReceiveMessage` applied `roundComplete` this process. Launch routing
+  /// must not cover that with Home. A saved context is not a message.
+  private var roundEndedByMessage = false
+  /// Set after activation chooses the cold-open face. A later context or
+  /// transfer that still matches that list is not a new round end.
+  private var launchFaceSettled = false
+  private var loggedSavedRoundHomeSkip = false
   /// Last complication snapshot written to the app group. Reload only when it changes.
   private var complicationStamp = ""
   /// Watch Back/Cancel on the putt sheet. Blocks phone keep-alive from reopening.
@@ -303,8 +310,10 @@ final class WatchClubSession: NSObject, ObservableObject, WCSessionDelegate, CLL
     list.roundLive && !list.roundComplete && hasLiveHole && roundIsFresh
   }
 
+  /// Home and nearby. A saved finished round still has a bag, so `hasLiveHole`
+  /// is not the gate — only a real live round (`liveHoleInProgress`) stays off Home.
   var showsNearby: Bool {
-    nearby.active && (!hasLiveHole || nearbyFromHome)
+    nearby.active && (!liveHoleInProgress || nearbyFromHome)
   }
 
   /// Watch Home is the face when no course has been tapped: Favorites, plus
@@ -395,10 +404,9 @@ final class WatchClubSession: NSObject, ObservableObject, WCSessionDelegate, CLL
     loadFromDefaults()
     seedAppLiveYardsFromList()
     loadHome()
-    if !hasLiveHole {
-      // Open straight onto Watch Home from the cached rows.
-      nearby.active = true
-    }
+    // Saved Round complete is not a live hole. Activation applies the phone's
+    // last context and settles again once the session can `requestHome`.
+    settleLaunchFace()
     loadPending()
     if pendingQueue.contains(where: { ($0["type"] as? String) == "penaltyPick" }) {
       penaltyRetry = true
@@ -1547,7 +1555,9 @@ final class WatchClubSession: NSObject, ObservableObject, WCSessionDelegate, CLL
   /// Phone list reply (e.g. a pick the phone could not open). Land back on
   /// Watch Home with the phone's line instead of a dead end.
   private func applyNearbyCourses(_ message: [String: Any]) {
-    if hasLiveHole && !nearbyFromHome { return }
+    // Cold open onto Home keeps the saved bag, so `hasLiveHole` alone must not
+    // drop the course list. The hole face is `nearby.active == false`.
+    if !nearby.active && hasLiveHole && !nearbyFromHome { return }
     var next = nearby
     next.active = true
     next.awaitingSelect = true
@@ -1653,7 +1663,7 @@ final class WatchClubSession: NSObject, ObservableObject, WCSessionDelegate, CLL
   }
 
   private func applyNearbyTees(_ message: [String: Any]) {
-    if hasLiveHole && !nearbyFromHome { return }
+    if !nearby.active && hasLiveHole && !nearbyFromHome { return }
     var next = nearby
     next.active = true
     next.awaitingSelect = false
@@ -1674,7 +1684,7 @@ final class WatchClubSession: NSObject, ObservableObject, WCSessionDelegate, CLL
     nearby = next
   }
 
-  private func applyClubList(_ message: [String: Any], fromPhone: Bool = false) {
+  private func applyClubList(_ message: [String: Any], fromPhone: Bool = false, endedByMessage: Bool = false) {
     let type = message["type"] as? String
     // Application context carries the latest Watch Home next to clubList.
     if let nested = message["watchHome"] as? [String: Any] {
@@ -1712,6 +1722,9 @@ final class WatchClubSession: NSObject, ObservableObject, WCSessionDelegate, CLL
       workoutLog.info("round end applied despite older listSeq; no live list this launch")
     }
     receivedClubList = true
+    if endedByMessage && incomingComplete {
+      roundEndedByMessage = true
+    }
     if fromPhone && incomingLive && !incomingComplete {
       receivedLiveListThisLaunch = true
       workoutLog.info("live club list received this launch; round is fresh")
@@ -2624,6 +2637,56 @@ final class WatchClubSession: NSObject, ObservableObject, WCSessionDelegate, CLL
     syncRoundStay()
   }
 
+  /// Identity of the club list now on screen. A relaunch delivery of the same
+  /// saved context matches; a finish while the app is open does not.
+  private var listFaceStamp: String {
+    "\(list.listSeq)|\(list.roundComplete)|\(list.roundLive)|\(list.liveAtMs)|\(list.holeNumber)"
+  }
+
+  /// Cold open stays on the hole only for `liveHoleInProgress` (live, not
+  /// complete, fresh, or an open putt sheet on a fresh round). A saved Round
+  /// complete or a stale list goes Home. A round-end message already applied
+  /// this launch is left on Round complete.
+  private func settleLaunchFace(commit: Bool = false) {
+    if roundEndedByMessage { return }
+    if liveHoleInProgress {
+      if !nearbyFromHome {
+        nearby.active = false
+      }
+      return
+    }
+    // Init runs before the phone's last context is applied. Log only the
+    // activation decision, so a saved finish replaced by a live list stays quiet.
+    if commit { logSavedRoundHomeSkipIfNeeded() }
+    nearby.active = true
+    nearby.awaitingSelect = true
+    requestHome()
+  }
+
+  /// One line when launch ignores a saved finished or stale list. No round at
+  /// all is the ordinary Home open and stays quiet.
+  private func logSavedRoundHomeSkipIfNeeded() {
+    guard !loggedSavedRoundHomeSkip else { return }
+    if list.roundComplete && hasLiveHole {
+      loggedSavedRoundHomeSkip = true
+      workoutLog.info("saved round skipped at launch; round complete")
+      return
+    }
+    if roundLooksLive && !roundIsFresh {
+      loggedSavedRoundHomeSkip = true
+      workoutLog.info("saved round skipped at launch; round is not fresh")
+    }
+  }
+
+  /// Same saved list again after the cold-open face was chosen. Puts Home back
+  /// without another `homeRequest` — activation already sent that.
+  private func restoreHomeAfterSavedEcho(before: String) {
+    guard launchFaceSettled, !roundEndedByMessage, !liveHoleInProgress else { return }
+    guard listFaceStamp == before, !nearby.active else { return }
+    nearby.active = true
+    nearby.awaitingSelect = true
+  }
+
   func session(_ session: WCSession, activationDidCompleteWith activationState: WCSessionActivationState, error: Error?) {
     // Last context from any launch. Not a receive during this process.
     applyClubList(session.receivedApplicationContext)
@@ -2631,34 +2694,34 @@ final class WatchClubSession: NSObject, ObservableObject, WCSessionDelegate, CLL
       flushPending()
       DispatchQueue.main.async {
         self.syncRoundStay()
-        if self.hasLiveHole && !self.nearbyFromHome {
-          self.nearby.active = false
-          return
-        }
-        self.nearby.active = true
-        self.nearby.awaitingSelect = true
-        self.requestHome()
+        self.settleLaunchFace(commit: true)
+        // Context and transfers after this are a round ending while open.
+        self.launchFaceSettled = true
       }
     }
   }
 
   func session(_ session: WCSession, didReceiveApplicationContext applicationContext: [String: Any]) {
     DispatchQueue.main.async {
+      let before = self.listFaceStamp
       self.applyClubList(applicationContext, fromPhone: true)
+      self.restoreHomeAfterSavedEcho(before: before)
     }
   }
 
   func session(_ session: WCSession, didReceiveMessage message: [String: Any]) {
     DispatchQueue.main.async {
       if self.applyWatchAck(message) { return }
-      self.applyClubList(message, fromPhone: true)
+      self.applyClubList(message, fromPhone: true, endedByMessage: true)
     }
   }
 
   func session(_ session: WCSession, didReceiveUserInfo userInfo: [String: Any] = [:]) {
     DispatchQueue.main.async {
       if self.applyWatchAck(userInfo) { return }
+      let before = self.listFaceStamp
       self.applyClubList(userInfo, fromPhone: true)
+      self.restoreHomeAfterSavedEcho(before: before)
     }
   }
 

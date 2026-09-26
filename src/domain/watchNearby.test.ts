@@ -289,7 +289,7 @@ test('a live round opens that hole; a different round lives under Home', () => {
   assert.match(session, /var showsNearby/);
   assert.match(session, /nearbyFromHome/);
   assert.match(session, /dismissNearbyToHole/);
-  assert.match(session, /if hasLiveHole && !nearbyFromHome \{ return \}/);
+  assert.match(session, /if !nearby\.active && hasLiveHole && !nearbyFromHome \{ return \}/);
   const leaveFn = session.slice(session.indexOf('func leave('), session.indexOf('func dismissNearbyToHole'));
   assert.match(leaveFn, /nearbyFromHome = true/);
   assert.match(leaveFn, /awaitingSelect = true/);
@@ -299,8 +299,10 @@ test('a live round opens that hole; a different round lives under Home', () => {
   assert.match(session, /"holeCount"/);
   assert.match(session, /awaitingSelect/);
   const activate = session.slice(session.indexOf('activationDidCompleteWith'), session.indexOf('didReceiveApplicationContext'));
-  assert.match(activate, /awaitingSelect = true/);
+  assert.match(activate, /settleLaunchFace\(commit: true\)/);
   assert.doesNotMatch(activate, /requestNearby/);
+  const settle = session.slice(session.indexOf('private func settleLaunchFace'), session.indexOf('private func logSavedRoundHomeSkipIfNeeded'));
+  assert.match(settle, /awaitingSelect = true/);
   const replyFn = session.slice(session.indexOf('private func handleReply'), session.indexOf('private func failUnavailable'));
   assert.match(replyFn, /type == "startRound"/);
   assert.match(replyFn, /nearbyFromHome = false/);
