@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import {
   COPY,
+  courseListHeading,
   osmOverlayCreditLabel,
   csvExportSheetTitle,
   restoreFailureCopy,
@@ -80,6 +81,16 @@ test('player copy uses words, never ? or SI jargon dump', () => {
   assert.doesNotMatch(formatPlayHeader(1, 4, 371), /SI |Rating |Slope /);
   assert.equal(COPY.homeLede, 'Find a course, pick your tee, start the round.');
   assert.equal(COPY.nearbyHint, 'Courses near you — pull to refresh.');
+  assert.equal(COPY.coursesNearYou, 'Courses near you');
+  assert.equal(COPY.searchResults, 'Search results');
+  assert.equal(COPY.searchBusy, 'Searching…');
+  assert.equal(courseListHeading(''), COPY.coursesNearYou);
+  assert.equal(courseListHeading('   '), COPY.coursesNearYou);
+  assert.equal(courseListHeading('32218'), 'Courses near 32218');
+  assert.equal(courseListHeading(' 71753-0001 '), 'Courses near 71753');
+  assert.equal(courseListHeading('Jacksonville FL'), COPY.searchResults);
+  assert.equal(courseListHeading('322'), COPY.searchResults);
+  assert.equal(courseListHeading('magnolia'), COPY.searchResults);
   assert.equal(COPY.waitingOnGreen, 'Waiting on green location.');
   assert.equal(COPY.courseCardMissingFrame, 'Need the course tee and green for this hole.');
   assert.equal(lockFrameEmptyStateWaitsForPhone(), false);

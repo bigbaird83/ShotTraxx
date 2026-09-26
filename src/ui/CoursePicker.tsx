@@ -1,5 +1,5 @@
 import { router } from 'expo-router';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { courseAllowsFavorite } from '@/src/course/yardTestCourse';
 import { isGolfCoursesApiConfigured } from '@/src/course/config';
@@ -7,7 +7,8 @@ import { getCourseDataClient } from '@/src/course/client';
 import { formatTeeHoleYards, formatTeeMeta } from '@/src/course/layout';
 import type { CourseDetail, CourseSummary, TeeSet } from '@/src/course/types';
 import type { GpsFix } from '@/src/domain/types';
-import { COPY } from '@/src/domain/playerCopy';
+import { COPY, courseListHeading } from '@/src/domain/playerCopy';
+import { courseSearchResponseIsCurrent, nextCourseSearchRequest } from '@/src/domain/courseSearchRequest';
 import { formatPaintSourceChip, planCourseCard, type PaintResultWinner } from '@/src/domain/courseCard';
 import { planPaintMissBanner } from '@/src/domain/paintMiss';
 import { deferCourseSearchLayout } from '@/src/domain/courseSearchLayout';
@@ -85,25 +86,66 @@ export function CoursePicker({
   const [tees, setTees] = useState<TeeSet[] | null>(null);
   const [detail, setDetail] = useState<CourseDetail | null>(null);
   const [paintById, setPaintById] = useState<Record<string, PaintResultWinner>>({});
+  const searchGen = useRef(0);
+  const latestQueryRef = useRef(query);
+  const searchAbort = useRef<AbortController | null>(null);
+  latestQueryRef.current = query;
 
   const onFind = useCallback(async () => {
+    const startedQuery = query;
+    const requestId = nextCourseSearchRequest(searchGen.current);
+    searchGen.current = requestId;
+    searchAbort.current?.abort();
+    const controller = new AbortController();
+    searchAbort.current = controller;
+    const signal = controller.signal;
+    const apply = (gpsNearby = false) =>
+      courseSearchResponseIsCurrent({
+        requestId,
+        latestRequestId: searchGen.current,
+        startedQuery,
+        latestQuery: latestQueryRef.current,
+        gpsNearby,
+      }) && !signal.aborted;
+
+    if (!apply()) return;
+    if (planNearbyCourseSearch({ query, phoneFix: null, nowMs: 0 }).mode === 'too_short') {
+      if (apply()) setBusy(false);
+      return;
+    }
+
     setBusy(true);
     setError(null);
     try {
       const zipQuery = parseUsZip(query);
       const rawFix = zipQuery ? null : await getCurrentFix().catch(() => null);
+      if (!apply()) return;
       const nowMs = Date.now();
       const plan = planNearbyCourseSearch({ query, phoneFix: rawFix, nowMs });
+      if (plan.mode === 'too_short') {
+        if (apply()) setBusy(false);
+        return;
+      }
+      const client = getCourseDataClient();
+      const nearbyCourses = (from: LatLng) => client.nearbyCourses(from, undefined, signal);
+      const searchCourses = (q: string) => client.searchCourses(q, signal);
+      const gpsNearby = plan.mode === 'nearby';
+      if (!apply(gpsNearby)) return;
       setListNowMs(nowMs);
       if (plan.mode === 'needs_location') {
+        if (!apply()) return;
         setListPhoneFix(rawFix);
         setListFrom(null);
-        deferCourseSearchLayout(() => setResults([]));
+        deferCourseSearchLayout(() => {
+          if (!apply()) return;
+          setResults([]);
+        });
         setError(COPY.nearbyNeedsLocation);
         return;
       }
       if (plan.mode === 'zip') {
         const geo = await geocodeUsZip(plan.zip);
+        if (!apply()) return;
         if (!geo.ok) {
           setListPhoneFix(null);
           setListFrom(null);
@@ -111,48 +153,70 @@ export function CoursePicker({
           setError(COPY.zipGeocodeMiss);
           return;
         }
-        const found = await getCourseDataClient().nearbyCourses(geo.from);
+        const found = await nearbyCourses(geo.from);
+        if (!apply()) return;
         const listed = planCourseList({
           courses: found,
           lastPlayedAtByCourse,
           from: geo.from,
           nowMs,
         });
+        if (!apply()) return;
         setListPhoneFix(null);
         setListFrom(geo.from);
-        deferCourseSearchLayout(() => setResults(listed));
+        deferCourseSearchLayout(() => {
+          if (!apply()) return;
+          setResults(listed);
+        });
         if (listed.length === 0) {
           setError(COPY.nearbyEmpty);
         }
         return;
       }
+      if (!apply(gpsNearby)) return;
       setListPhoneFix(rawFix);
       setListFrom(null);
       const found =
         plan.mode === 'search'
-          ? await getCourseDataClient().searchCourses(plan.q)
-          : await getCourseDataClient().nearbyCourses(plan.from);
+          ? await searchCourses(plan.q)
+          : await nearbyCourses(plan.from);
+      if (!apply(gpsNearby)) return;
       const listed = planCourseList({
         courses: found,
         lastPlayedAtByCourse,
         phoneFix: rawFix,
         nowMs,
       });
-      deferCourseSearchLayout(() => setResults(listed));
+      if (!apply(gpsNearby)) return;
+      deferCourseSearchLayout(() => {
+        if (!apply(gpsNearby)) return;
+        setResults(listed);
+      });
       if (listed.length === 0) {
         setError(COPY.nearbyEmpty);
       }
     } catch (err) {
-      deferCourseSearchLayout(() => setResults([]));
+      if (!apply()) return;
+      deferCourseSearchLayout(() => {
+        if (!apply()) return;
+        setResults([]);
+      });
       setError(err instanceof Error ? err.message : 'Couldn’t find courses.');
     } finally {
-      setBusy(false);
+      if (apply()) setBusy(false);
     }
   }, [query, lastPlayedAtByCourse]);
 
   useEffect(() => {
     onRefreshReady?.(onFind);
   }, [onFind, onRefreshReady]);
+
+  useEffect(() => {
+    return () => {
+      searchAbort.current?.abort();
+      searchGen.current = nextCourseSearchRequest(searchGen.current);
+    };
+  }, []);
 
   useEffect(() => {
     if (!autoFind) return;
@@ -279,11 +343,13 @@ export function CoursePicker({
               onPress={() => onQueryChange?.('')}
             />
           ) : null}
-          <Text style={styles.label}>{COPY.nearbyHint}</Text>
+          <Text style={styles.label}>{query.trim() ? courseListHeading(query) : COPY.nearbyHint}</Text>
           {!configured && emptyNearby ? <Text style={styles.meta}>{COPY.nearbyUnavailable}</Text> : null}
           {error && !emptyNearby ? <Text style={styles.warn}>{error}</Text> : null}
           {zipMiss ? <Text style={styles.meta}>{COPY.zipGeocodeMissHint}</Text> : null}
-          {busy ? <Text style={styles.meta}>{COPY.nearbyBusy}</Text> : null}
+          {busy ? (
+            <Text style={styles.meta}>{query.trim() ? COPY.searchBusy : COPY.nearbyBusy}</Text>
+          ) : null}
           {emptyNearby ? (
             <EmptyPanel
               title={needsLocation ? COPY.nearbyNeedsLocation : COPY.nearbyEmpty}

@@ -481,7 +481,7 @@ export default function HomeScreen() {
                   pressed && styles.pressed,
                 ]}>
                 <Icon name="location.fill" color={colors.onAccent} size={15} glyph="◉" />
-                <Text style={styles.nearPillText}>Courses near you</Text>
+                <Text style={styles.nearPillText}>{COPY.coursesNearYou}</Text>
               </Pressable>
               <Text style={styles.heroMeta}>Pull to refresh</Text>
             </View>

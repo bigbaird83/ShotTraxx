@@ -74,6 +74,33 @@ export function clubAverageFromShots(shots: AverageShot[], seed: AverageSeed): C
   return averageWithBadges(shotsForClubAverage(shots, seed));
 }
 
+/** Shown on a bag row when the club is unchecked. Not a yardage. */
+export const DISABLED_CLUB_YARDAGE = '—' as const;
+
+/**
+ * Averages tab rows. Unchecked clubs (`enabled` false) are not in the bag,
+ * so they have no row. This only filters the list — it does not delete,
+ * reassign, or rewrite shots.
+ */
+export function enabledClubAverageRows<T extends { club: { enabled: boolean } }>(
+  rows: readonly T[],
+): T[] {
+  return rows.filter((row) => row.club.enabled);
+}
+
+/**
+ * Bag-row yardage. A disabled club is a dash, never its live average and
+ * never a typical or stock carry. An enabled club keeps `yards` as given
+ * (including null when there is no number yet).
+ */
+export function bagClubYardageLabel(args: {
+  enabled: boolean;
+  yards: number | null;
+}): number | null | typeof DISABLED_CLUB_YARDAGE {
+  if (!args.enabled) return DISABLED_CLUB_YARDAGE;
+  return args.yards;
+}
+
 /**
  * Club averages include `soft` and `forced` GPS shots; badges report that mix.
  * Callers must pass only shots that `includeInDistanceAverages` accepts —

@@ -161,7 +161,21 @@ export type NearbyCourseSearchPlan =
   | { mode: 'search'; q: string }
   | { mode: 'zip'; zip: string }
   | { mode: 'nearby'; from: LatLng }
-  | { mode: 'needs_location' };
+  | { mode: 'needs_location' }
+  | { mode: 'too_short' };
+
+/**
+ * Name search needs 3 non-space characters.
+ * Digits-only shorter than a ZIP is not a name search — wait for 5 digits.
+ * Empty stays on the GPS nearby path. A real ZIP is not too short.
+ */
+export function courseSearchInputTooShort(raw: string | null | undefined): boolean {
+  const q = raw?.trim() ?? '';
+  if (!q || parseUsZip(q)) return false;
+  const compact = q.replace(/\s+/g, '');
+  if (/^\d+$/.test(compact)) return compact.length < 5;
+  return compact.length < 3;
+}
 
 /** Nearby without a fresh phone fix does not invent a point or an order. Zip is its own path. */
 export function planNearbyCourseSearch(args: {
@@ -173,6 +187,7 @@ export function planNearbyCourseSearch(args: {
   const q = parseCourseSearchQuery(args.query);
   const zip = parseUsZip(q);
   if (zip) return { mode: 'zip', zip };
+  if (q && courseSearchInputTooShort(q)) return { mode: 'too_short' };
   if (q) return { mode: 'search', q };
   const phone = phoneFixForCourseList(args);
   if (!phone) return { mode: 'needs_location' };

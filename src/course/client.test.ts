@@ -112,6 +112,23 @@ test('searchCourses sends q= for name, city, state, or zip and never invents a c
   assert.equal(urls.length, 1);
 });
 
+test('nearby and search pass AbortSignal through to fetch', async () => {
+  const signals: Array<AbortSignal | null | undefined> = [];
+  const client = createCourseDataClient({
+    getBaseUrl: () => 'https://share.test/gca/v1',
+    fetch: async (_input, init) => {
+      signals.push(init?.signal);
+      return new Response(JSON.stringify({ data: [] }), { status: 200 });
+    },
+  });
+  const controller = new AbortController();
+  await client.searchCourses('pebble', controller.signal);
+  await client.nearbyCourses({ lat: 37, lng: -122 }, undefined, controller.signal);
+  assert.equal(signals.length, 2);
+  assert.equal(signals[0], controller.signal);
+  assert.equal(signals[1], controller.signal);
+});
+
 test('getCourse loads scorecard then Pro green-centers', async () => {
   resetCoursePaintCacheForTests();
   const urls: string[] = [];

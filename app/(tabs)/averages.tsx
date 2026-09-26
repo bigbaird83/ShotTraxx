@@ -1,7 +1,9 @@
-import { useMemo } from 'react';
+import { useFocusEffect } from 'expo-router';
+import { useCallback, useMemo } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import { useDb } from '@/src/db/DbProvider';
 import { listClubAverages } from '@/src/db/repo';
+import { enabledClubAverageRows } from '@/src/domain/averages';
 import { clubCarryMeta } from '@/src/domain/bagDistance';
 import { COPY } from '@/src/domain/playerCopy';
 import { EmptyPanel } from '@/src/ui/EmptyPanel';
@@ -11,10 +13,15 @@ import { tapTarget, type, type ColorPalette } from '@/src/ui/theme';
 import { TabSwipe } from '@/src/ui/TabSwipe';
 
 export default function AveragesScreen() {
-  const { db, revision } = useDb();
+  const { db, revision, bump } = useDb();
   const colors = useColors();
   const styles = useMemo(() => makeStyles(colors), [colors]);
-  const rows = useMemo(() => listClubAverages(db), [db, revision]);
+  useFocusEffect(
+    useCallback(() => {
+      bump();
+    }, [bump]),
+  );
+  const rows = useMemo(() => enabledClubAverageRows(listClubAverages(db)), [db, revision]);
   const hasLive = rows.some((row) => row.count > 0);
 
   return (

@@ -60,13 +60,16 @@ async function apiGet(
   path: string,
   base: string,
   fetchImpl: typeof fetch,
+  signal?: AbortSignal,
 ): Promise<{ status: number; json: unknown }> {
   let res: Response;
   try {
     res = await fetchImpl(`${base}${path}`, {
       headers: { Accept: 'application/json' },
+      signal,
     });
   } catch (err) {
+    if (signal?.aborted) throw err;
     throw new GolfCoursesApiError(networkHint(err));
   }
   if (res.status === 401) {
@@ -154,7 +157,11 @@ export function createCourseDataClient(deps: CourseDataDeps = {}): CourseDataCli
       return getBaseUrl() != null;
     },
 
-    async nearbyCourses(from: LatLng, radiusKm = DEFAULT_RADIUS_KM): Promise<CourseSummary[]> {
+    async nearbyCourses(
+      from: LatLng,
+      radiusKm = DEFAULT_RADIUS_KM,
+      signal?: AbortSignal,
+    ): Promise<CourseSummary[]> {
       const base = getBaseUrl();
       const radius = Math.min(MAX_RADIUS_KM, Math.max(1, radiusKm));
       const local = nearbyLocalCatalog(from, radius);
@@ -164,7 +171,7 @@ export function createCourseDataClient(deps: CourseDataDeps = {}): CourseDataCli
         lng: String(from.lng),
         radius: String(radius),
       });
-      const { status, json } = await apiGet(`/courses?${query.toString()}`, base, fetchImpl);
+      const { status, json } = await apiGet(`/courses?${query.toString()}`, base, fetchImpl, signal);
       if (status === 403) {
         throw new GolfCoursesApiError('Courses near you aren’t available.', 403);
       }
@@ -176,14 +183,14 @@ export function createCourseDataClient(deps: CourseDataDeps = {}): CourseDataCli
       );
     },
 
-    async searchCourses(query: string): Promise<CourseSummary[]> {
+    async searchCourses(query: string, signal?: AbortSignal): Promise<CourseSummary[]> {
       const base = getBaseUrl();
       const params = planCourseSearchParams(query);
       if (!params) return [];
       const local = searchLocalCatalog(params.q);
       if (!base) return local;
       const search = new URLSearchParams({ q: params.q });
-      const { status, json } = await apiGet(`/courses?${search.toString()}`, base, fetchImpl);
+      const { status, json } = await apiGet(`/courses?${search.toString()}`, base, fetchImpl, signal);
       if (status === 403) {
         throw new GolfCoursesApiError('Courses aren’t available right now.', 403);
       }

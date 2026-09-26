@@ -8,6 +8,7 @@ import {
   setClubEnabled,
   updateClubCarry,
 } from '@/src/db/repo';
+import { bagClubYardageLabel, DISABLED_CLUB_YARDAGE } from '@/src/domain/averages';
 import { bagCarryChip, canEditTypedCarry, clubCarryMeta, type BagCarry } from '@/src/domain/bagDistance';
 import { bagSuggestionIsDismissed, dismissBagSuggestion } from '@/src/domain/bagSuggestion';
 import { isPutterClubId, parseTypicalCarryYards } from '@/src/domain/defaultBag';
@@ -44,6 +45,11 @@ export function BagCarryList({ db, clubs, onChange, onRename }: Props) {
           suggestion != null &&
           !bagSuggestionIsDismissed(averages.dismissed, club.id, suggestion.newestShotId);
         const putter = isPutterClubId(club.id);
+        const yardageLabel = bagClubYardageLabel({
+          enabled: club.enabled,
+          yards: carry?.yards ?? null,
+        });
+        const showDash = yardageLabel === DISABLED_CLUB_YARDAGE;
         const editable = carry == null || canEditTypedCarry(carry);
         const draft = editable ? drafts[club.id] : undefined;
         // Seed shows as the placeholder so typing starts from empty, never from the stock number.
@@ -65,7 +71,13 @@ export function BagCarryList({ db, clubs, onChange, onRename }: Props) {
                 <Text style={styles.name}>{club.name}</Text>
                 <Text style={styles.short}>{club.shortName}</Text>
               </Pressable>
-              {putter ? null : (
+              {putter ? null : showDash ? (
+                <View style={styles.carryRow}>
+                  <Text accessibilityLabel={`${club.shortName} average`} style={styles.dash}>
+                    {DISABLED_CLUB_YARDAGE}
+                  </Text>
+                </View>
+              ) : (
                 <View style={styles.carryRow}>
                   <TextInput
                     accessibilityLabel={`${club.shortName} ${COPY.typicalCarryYards}`}
@@ -145,6 +157,12 @@ export function BagCarryList({ db, clubs, onChange, onRename }: Props) {
               value={club.enabled}
               onValueChange={(value) => {
                 setClubEnabled(db, club.id, value);
+                setDrafts((prev) => {
+                  if (prev[club.id] === undefined) return prev;
+                  const next = { ...prev };
+                  delete next[club.id];
+                  return next;
+                });
                 onChange();
               }}
               trackColor={{ true: colors.cream, false: colors.line }}
@@ -213,6 +231,15 @@ function makeStyles(colors: ColorPalette) {
     backgroundColor: colors.bg,
   },
   carryLive: { borderColor: 'transparent', backgroundColor: 'transparent' },
+  dash: {
+    minHeight: 48,
+    minWidth: 96,
+    paddingHorizontal: 10,
+    color: colors.cream,
+    fontSize: 22,
+    fontWeight: '900',
+    lineHeight: 48,
+  },
   badge: { color: colors.amber, fontSize: type.tiny, fontWeight: '800' },
   seedBadge: { color: colors.muted, fontSize: type.tiny, fontWeight: '800' },
   suggest: { gap: 6 },

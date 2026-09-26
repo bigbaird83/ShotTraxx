@@ -4,7 +4,10 @@ import { includeInDistanceAverages } from './shotSource';
 import { PUTTER_CLUB_ID } from './defaultBag';
 import {
   averageWithBadges,
+  bagClubYardageLabel,
   clubAverageFromShots,
+  DISABLED_CLUB_YARDAGE,
+  enabledClubAverageRows,
   shotMovesClubAverage,
   shotsForClubAverage,
 } from './averages';
@@ -158,6 +161,51 @@ test('a Placed outlier is excluded the same way as live and soft', () => {
     typedCarryYards: 150,
     estimatedCarryYards: null,
   }).count, 0);
+});
+
+test('disabled clubs are left off the averages list', () => {
+  const fiveIronShots = [{ id: 'shot-5i', clubId: 'club_5i', yards: 168 }];
+  const sevenIronShots = [{ id: 'shot-7i', clubId: 'club_7i', yards: 151 }];
+  const rows = [
+    { club: { id: 'club_5i', enabled: false }, avgYards: 168, shots: fiveIronShots },
+    { club: { id: 'club_7i', enabled: true }, avgYards: 151, shots: sevenIronShots },
+    { club: { id: 'club_8i', enabled: true }, avgYards: null, shots: [] as { id: string; clubId: string; yards: number }[] },
+  ];
+  const visible = enabledClubAverageRows(rows);
+  assert.deepEqual(
+    visible.map((row) => row.club.id),
+    ['club_7i', 'club_8i'],
+  );
+  assert.equal(rows.length, 3);
+  assert.equal(rows[0].shots, fiveIronShots);
+  assert.equal(rows[0].shots[0].clubId, 'club_5i');
+  assert.equal(rows[0].shots[0].yards, 168);
+  assert.equal(rows[1].shots, sevenIronShots);
+});
+
+test('a re-enabled club is included again with the same average', () => {
+  const shots = [{ id: 'shot-5i', clubId: 'club_5i', yards: 168 }];
+  const before = shots.map((shot) => ({ ...shot }));
+  const hidden = enabledClubAverageRows([
+    { club: { id: 'club_5i', enabled: false }, avgYards: 168, shots },
+  ]);
+  assert.equal(hidden.length, 0);
+  const shown = enabledClubAverageRows([
+    { club: { id: 'club_5i', enabled: true }, avgYards: 168, shots },
+  ]);
+  assert.equal(shown.length, 1);
+  assert.equal(shown[0]?.club.id, 'club_5i');
+  assert.equal(shown[0]?.avgYards, 168);
+  assert.equal(shown[0]?.shots, shots);
+  assert.deepEqual(shots, before);
+});
+
+test('a disabled bag club shows a dash, not a typical carry', () => {
+  assert.equal(bagClubYardageLabel({ enabled: false, yards: 230 }), DISABLED_CLUB_YARDAGE);
+  assert.equal(bagClubYardageLabel({ enabled: false, yards: null }), DISABLED_CLUB_YARDAGE);
+  assert.equal(DISABLED_CLUB_YARDAGE, '—');
+  assert.equal(bagClubYardageLabel({ enabled: true, yards: 168 }), 168);
+  assert.equal(bagClubYardageLabel({ enabled: true, yards: null }), null);
 });
 
 test('inside 20% still updates; live average beats the seed', () => {

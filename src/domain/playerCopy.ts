@@ -1,3 +1,5 @@
+import { parseUsZip } from './zipGeocode';
+
 /** Player-facing copy. Accuracy / API / OSM rules stay in code, not on screen. */
 
 /** Published mark (USPTO SN 50113482). ™ only. Not ®. */
@@ -9,9 +11,12 @@ export const COPY = {
   home: 'Home',
   back: 'Back',
   nearbyHint: 'Courses near you — pull to refresh.',
+  coursesNearYou: 'Courses near you',
+  searchResults: 'Search results',
   nearbyEmpty: 'No courses found.',
   nearbyUnavailable: 'Courses aren’t available right now. Pull to refresh or try again.',
   nearbyBusy: 'Looking nearby…',
+  searchBusy: 'Searching…',
   nearbyRefresh: 'Pull to refresh',
   courseNamePlaceholder: 'Search by name, city, state, or zip',
   pickTee: 'Pick your tee',
@@ -327,6 +332,14 @@ export const COPY = {
   scorecardPar: 'Par',
   summaryHome: 'Home',
 } as const;
+
+/** List heading. Empty is courses near you. A zip names that zip. Any other text is search. */
+export function courseListHeading(query: string | null | undefined): string {
+  const zip = parseUsZip(query);
+  if (zip) return `Courses near ${zip}`;
+  if ((query?.trim() ?? '') !== '') return COPY.searchResults;
+  return COPY.coursesNearYou;
+}
 
 /**
  * Dispersion summary when some included shots were placed by hand.

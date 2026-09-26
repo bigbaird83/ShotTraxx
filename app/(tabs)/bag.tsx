@@ -1,4 +1,5 @@
-import { useMemo, useState } from 'react';
+import { useFocusEffect } from 'expo-router';
+import { useCallback, useMemo, useState } from 'react';
 import { Alert, StyleSheet, Text, TextInput } from 'react-native';
 import { useDb } from '@/src/db/DbProvider';
 import { addClub, deleteClub, listClubs, restoreDefaultBag, updateClub } from '@/src/db/repo';
@@ -14,6 +15,11 @@ export default function BagScreen() {
   const { db, revision, bump } = useDb();
   const colors = useColors();
   const styles = useMemo(() => makeStyles(colors), [colors]);
+  useFocusEffect(
+    useCallback(() => {
+      bump();
+    }, [bump]),
+  );
   const clubs = useMemo(() => listClubs(db), [db, revision]);
   const [name, setName] = useState('');
   const [shortName, setShortName] = useState('');

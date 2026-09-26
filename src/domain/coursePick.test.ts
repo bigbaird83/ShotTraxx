@@ -28,6 +28,7 @@ import {
   planCourseListSort,
   planCourseSearchParams,
   planNearbyCourseSearch,
+  courseSearchInputTooShort,
 } from './coursePick';
 import { inventGreenFromCenterPlusYards, inventGreenFromCourseCenter } from './courseCardPaint';
 import { NEARBY_COURSE_FIX_MAX_AGE_MS } from './watchNearby';
@@ -246,5 +247,41 @@ test('distance sort uses a fresh phone fix; missing or stale falls back to name'
   assert.deepEqual(planNearbyCourseSearch({ query: '', phoneFix: phone, nowMs }), {
     mode: 'nearby',
     from: { lat: phone.lat, lng: phone.lng },
+  });
+});
+
+test('short and partial digit input is not a name search', () => {
+  assert.equal(courseSearchInputTooShort(''), false);
+  assert.equal(courseSearchInputTooShort('32218'), false);
+  assert.equal(courseSearchInputTooShort('oak'), false);
+  for (const query of ['3', '32', '322', '3221', '  3  ', '1 2', 'ab', 'a b', '  ma']) {
+    assert.equal(courseSearchInputTooShort(query), true, query);
+    assert.deepEqual(planNearbyCourseSearch({ query, phoneFix: null, nowMs: 1 }), {
+      mode: 'too_short',
+    });
+  }
+  assert.deepEqual(planNearbyCourseSearch({ query: '32218', phoneFix: null, nowMs: 1 }), {
+    mode: 'zip',
+    zip: '32218',
+  });
+  assert.deepEqual(planNearbyCourseSearch({ query: '71753-0001', phoneFix: null, nowMs: 1 }), {
+    mode: 'zip',
+    zip: '71753',
+  });
+  assert.deepEqual(planNearbyCourseSearch({ query: 'oak', phoneFix: null, nowMs: 1 }), {
+    mode: 'search',
+    q: 'oak',
+  });
+  assert.deepEqual(planNearbyCourseSearch({ query: '12a', phoneFix: null, nowMs: 1 }), {
+    mode: 'search',
+    q: '12a',
+  });
+  assert.deepEqual(planNearbyCourseSearch({ query: 'Jacksonville FL', phoneFix: null, nowMs: 1 }), {
+    mode: 'search',
+    q: 'Jacksonville FL',
+  });
+  assert.deepEqual(planNearbyCourseSearch({ query: '123456', phoneFix: null, nowMs: 1 }), {
+    mode: 'search',
+    q: '123456',
   });
 });
