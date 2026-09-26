@@ -24,6 +24,7 @@ import {
   SG_CATEGORY_LABELS,
   weakestCategory,
 } from '@/src/domain/strokesGained';
+import { useProFeature } from '@/src/services/proFeature';
 import { Screen } from '@/src/ui/Screen';
 import { useColors } from '@/src/ui/ColorThemeProvider';
 import { type ColorPalette } from '@/src/ui/theme';
@@ -37,6 +38,7 @@ function formatPick(pick: ReviewShotPick | null): string | null {
 export default function ReviewStatsScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const { db, revision } = useDb();
+  const strokesGainedOn = useProFeature();
   const colors = useColors();
   const styles = useMemo(() => makeStyles(colors), [colors]);
   const round = useMemo(() => getRound(db, id), [db, id, revision]);
@@ -101,7 +103,7 @@ export default function ReviewStatsScreen() {
         </Text>
       </View>
 
-      <StrokesGainedBlock styles={styles} sg={strokesGained} />
+      <StrokesGainedBlock styles={styles} sg={strokesGained} unlocked={strokesGainedOn} />
 
       <View style={styles.block}>
         <Row styles={styles} label={COPY.putts} value={stats.putts} />
@@ -168,10 +170,20 @@ export default function ReviewStatsScreen() {
 function StrokesGainedBlock({
   styles,
   sg,
+  unlocked,
 }: {
   styles: ReturnType<typeof makeStyles>;
   sg: ReturnType<typeof roundStrokesGained>;
+  unlocked: boolean;
 }) {
+  if (!unlocked) {
+    return (
+      <View style={styles.block} testID="stats-strokes-gained">
+        <Text style={styles.section}>{COPY.strokesGained}</Text>
+        <Text style={styles.muted}>{COPY.strokesGainedPro}</Text>
+      </View>
+    );
+  }
   if (!sg) {
     return (
       <View style={styles.block} testID="stats-strokes-gained">

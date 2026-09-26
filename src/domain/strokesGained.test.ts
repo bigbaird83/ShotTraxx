@@ -8,6 +8,7 @@ import {
   expectedOffGreen,
   expectedPuttsForBucket,
   formatStrokesGained,
+  strokesGainedChip,
   holeStrokesGained,
   roundStrokesGained,
   weakestCategory,
@@ -251,6 +252,9 @@ test('a shot with no lie matches the fairway/rough mean strokes gained uses toda
 });
 
 test('format and weakest category', () => {
+  assert.equal(strokesGainedChip(0.34), 'SG +0.3');
+  assert.equal(strokesGainedChip(-1.26), 'SG −1.3');
+  assert.equal(strokesGainedChip(null), null);
   assert.equal(formatStrokesGained(1.24), '+1.2');
   assert.equal(formatStrokesGained(-0.46), '−0.5');
   assert.equal(formatStrokesGained(0.02), '0.0');

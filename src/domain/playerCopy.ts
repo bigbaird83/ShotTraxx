@@ -249,6 +249,7 @@ export const COPY = {
   statsFairwayGir: 'Fairways & greens',
   statsDifferential: 'Score differential',
   strokesGained: 'Strokes gained',
+  strokesGainedPro: 'Strokes gained is part of Pro',
   shotLie: 'Lie',
   shotLieAuto: 'Auto',
   shotLieUnknown: 'Unknown',

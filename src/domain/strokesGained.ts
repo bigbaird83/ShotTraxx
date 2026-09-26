@@ -369,6 +369,11 @@ export function formatStrokesGained(value: number | null): string {
   return rounded > 0 ? `+${rounded.toFixed(1)}` : `−${Math.abs(rounded).toFixed(1)}`;
 }
 
+/** "SG +0.3" for a shot or putting row; null when that stroke has no SG. */
+export function strokesGainedChip(value: number | null): string | null {
+  return value == null || !Number.isFinite(value) ? null : `SG ${formatStrokesGained(value)}`;
+}
+
 export const SG_CATEGORY_LABELS: Record<SgCategory, string> = {
   offTee: 'Off the tee',
   approach: 'Approach',
