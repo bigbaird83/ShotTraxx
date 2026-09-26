@@ -63,6 +63,37 @@ export function watchLiveHoleInProgress(args: {
   return watchShouldStartRoundWorkout(args);
 }
 
+/**
+ * Cold-open face. Home unless this is a real live round, or a round-end
+ * message already applied in this process. A saved Round complete is not a
+ * live round (`liveHoleInProgress` is false) and must not be the first screen.
+ * Mirrors `settleLaunchFace` in targets/watch/WatchClubSession.swift.
+ */
+export function watchColdOpenShowsHome(args: {
+  liveHoleInProgress: boolean;
+  roundEndedByMessage: boolean;
+}): boolean {
+  if (args.roundEndedByMessage) return false;
+  return !args.liveHoleInProgress;
+}
+
+/**
+ * Launch log when a saved list is skipped. Null when there is nothing to skip
+ * (no list, or the list is a real live round and we are not skipping it).
+ * Mirrors `logSavedRoundHomeSkipIfNeeded`.
+ */
+export function watchSavedRoundSkipReason(args: {
+  hasSavedRound: boolean;
+  roundComplete: boolean;
+  roundLooksLive: boolean;
+  roundIsFresh: boolean;
+}): 'complete' | 'stale' | null {
+  if (!args.hasSavedRound) return null;
+  if (args.roundComplete) return 'complete';
+  if (args.roundLooksLive && !args.roundIsFresh) return 'stale';
+  return null;
+}
+
 /** Recovered HKWorkoutSession: keep it only while the round is fresh. */
 export function watchRecoveredWorkoutAction(roundIsFresh: boolean): 'keep' | 'end' {
   return roundIsFresh ? 'keep' : 'end';

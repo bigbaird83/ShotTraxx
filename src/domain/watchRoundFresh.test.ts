@@ -5,8 +5,10 @@ import {
   WATCH_ROUND_FRESH_MS,
   nextStaleWatchRoundClear,
   watchCanContinueRound,
+  watchColdOpenShowsHome,
   watchLiveHoleInProgress,
   watchRecoveredWorkoutAction,
+  watchSavedRoundSkipReason,
   watchRoundEndOverridesStaleSeq,
   watchRoundEndedClubList,
   watchRoundIsFresh,
@@ -119,6 +121,70 @@ test('a live list received this launch starts the workout', () => {
       roundIsFresh,
     }),
     true,
+  );
+});
+
+test('a cold open shows Home unless the round is live or a message just ended it', () => {
+  const freshLive = watchLiveHoleInProgress({ ...live, roundIsFresh: true });
+  assert.equal(freshLive, true);
+  assert.equal(watchColdOpenShowsHome({ liveHoleInProgress: freshLive, roundEndedByMessage: false }), false);
+  assert.equal(watchSavedRoundSkipReason({
+    hasSavedRound: true,
+    roundComplete: false,
+    roundLooksLive: true,
+    roundIsFresh: true,
+  }), null);
+
+  const putt = watchLiveHoleInProgress({
+    hasLiveHole: false,
+    puttOpen: true,
+    roundLive: true,
+    roundComplete: false,
+    roundIsFresh: true,
+  });
+  assert.equal(putt, true);
+  assert.equal(watchColdOpenShowsHome({ liveHoleInProgress: putt, roundEndedByMessage: false }), false);
+
+  // Saved Round complete still has a bag. It is not a live hole.
+  const savedComplete = watchLiveHoleInProgress({
+    ...live,
+    roundLive: false,
+    roundComplete: true,
+    roundIsFresh: true,
+  });
+  assert.equal(savedComplete, false);
+  assert.equal(
+    watchColdOpenShowsHome({ liveHoleInProgress: savedComplete, roundEndedByMessage: false }),
+    true,
+  );
+  assert.equal(watchSavedRoundSkipReason({
+    hasSavedRound: true,
+    roundComplete: true,
+    roundLooksLive: false,
+    roundIsFresh: false,
+  }), 'complete');
+
+  const stale = watchLiveHoleInProgress({ ...live, roundIsFresh: false });
+  assert.equal(stale, false);
+  assert.equal(watchColdOpenShowsHome({ liveHoleInProgress: stale, roundEndedByMessage: false }), true);
+  assert.equal(watchSavedRoundSkipReason({
+    hasSavedRound: true,
+    roundComplete: false,
+    roundLooksLive: true,
+    roundIsFresh: false,
+  }), 'stale');
+
+  assert.equal(watchSavedRoundSkipReason({
+    hasSavedRound: false,
+    roundComplete: false,
+    roundLooksLive: false,
+    roundIsFresh: false,
+  }), null);
+
+  // Phone finished the last hole while this process is up: stay on Round complete.
+  assert.equal(
+    watchColdOpenShowsHome({ liveHoleInProgress: false, roundEndedByMessage: true }),
+    false,
   );
 });
 
@@ -239,10 +305,36 @@ test('Watch freshness, recovery, and the phone clear are wired', () => {
     /fromPhone: true/,
   );
   assert.match(session, /applyClubList\(applicationContext, fromPhone: true\)/);
-  assert.match(session, /applyClubList\(message, fromPhone: true\)/);
+  assert.match(session, /applyClubList\(message, fromPhone: true, endedByMessage: true\)/);
   assert.match(session, /applyClubList\(userInfo, fromPhone: true\)/);
   assert.match(session, /var liveHoleInProgress: Bool \{\n    roundLooksLive && roundIsFresh/);
   assert.match(session, /let next = roundLooksLive && roundIsFresh/);
+  assert.match(session, /nearby\.active && \(!liveHoleInProgress \|\| nearbyFromHome\)/);
+  assert.doesNotMatch(session, /nearby\.active && \(!hasLiveHole \|\| nearbyFromHome\)/);
+  assert.match(session, /endedByMessage && incomingComplete/);
+  assert.match(session, /saved round skipped at launch; round complete/);
+  assert.match(session, /saved round skipped at launch; round is not fresh/);
+  const settle = session.slice(session.indexOf('private func settleLaunchFace'), session.indexOf('private func logSavedRoundHomeSkipIfNeeded'));
+  assert.match(settle, /if roundEndedByMessage \{ return \}/);
+  assert.match(settle, /if liveHoleInProgress/);
+  assert.doesNotMatch(settle, /hasLiveHole/);
+  assert.match(settle, /nearby\.active = true/);
+  assert.match(settle, /nearby\.awaitingSelect = true/);
+  assert.match(settle, /requestHome\(\)/);
+  const activate = session.slice(session.indexOf('activationDidCompleteWith'), session.indexOf('didReceiveApplicationContext'));
+  assert.match(activate, /settleLaunchFace\(commit: true\)/);
+  assert.match(activate, /launchFaceSettled = true/);
+  assert.doesNotMatch(activate, /hasLiveHole && !self\.nearbyFromHome/);
+  const restore = session.slice(session.indexOf('private func restoreHomeAfterSavedEcho'), session.indexOf('func session(_ session: WCSession, activationDidCompleteWith'));
+  assert.match(restore, /guard launchFaceSettled, !roundEndedByMessage, !liveHoleInProgress else \{ return \}/);
+  assert.doesNotMatch(restore, /requestHome\(\)/);
+  const homeAfter = session.slice(session.indexOf('func homeAfterRound'), session.indexOf('func dismissNearbyToHole'));
+  assert.match(homeAfter, /nearbyFromHome = true/);
+  assert.match(homeAfter, /requestHome\(\)/);
+  assert.doesNotMatch(homeAfter, /clubNav/);
+  const ui = read('targets/watch/content.swift');
+  assert.match(ui, /session\.list\.roundComplete && !session\.putt\.open/);
+  assert.match(ui, /session\.homeAfterRound\(\)/);
 
   const scene = session.slice(session.indexOf('func noteScenePhase'), session.indexOf('func noteLuminanceReduced'));
   const inactive = scene.slice(scene.indexOf('phase == "inactive"'));
